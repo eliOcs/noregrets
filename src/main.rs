@@ -7,16 +7,19 @@ mod br;
 mod cards;
 mod cfr;
 mod clone;
+mod depth_match;
 mod distill;
 mod engine;
 mod eval;
 mod flop;
 mod lbr;
+mod mirror;
 mod net;
 mod play;
 mod portfolio;
 mod river;
 mod search;
+mod serve;
 mod slumbot;
 mod table;
 mod turn;
@@ -213,6 +216,37 @@ enum Cmd {
         /// that are already near-pure.
         #[arg(long)]
         adaptive_search: bool,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
+    /// Answer bot decisions for another program: JSON lines on stdin and
+    /// stdout (see src/serve.rs). Blueprint only, no online search.
+    Serve {
+        #[arg(long, default_value = "blueprint.bin")]
+        blueprint: String,
+        /// The stack the blueprint was trained at, in chips; deeper stacks
+        /// are played as if this deep.
+        #[arg(long, default_value_t = 10_000)]
+        stack: u32,
+    },
+    /// Measure what playing blueprint A at stacks it was not trained for
+    /// costs, against a field of blueprint B trained at those stacks.
+    DepthMatch {
+        #[arg(long)]
+        a: String,
+        /// A's training stack in chips.
+        #[arg(long, default_value_t = 10_000)]
+        a_stack: u32,
+        #[arg(long)]
+        b: String,
+        /// B's training stack in chips.
+        #[arg(long)]
+        b_stack: u32,
+        /// Real stacks at the table, in chips.
+        #[arg(long)]
+        stack: u32,
+        #[arg(long, default_value_t = 100_000)]
+        hands: u64,
         #[arg(long, default_value_t = 42)]
         seed: u64,
     },
@@ -798,6 +832,49 @@ fn main() {
                 seed,
             };
             play::play(&policy, &opts);
+        }
+
+        Cmd::Serve { blueprint, stack } => {
+            let (policy, cfg) = load_policy_quietly(&blueprint, stack);
+            serve::serve(&policy, &cfg);
+        }
+
+        Cmd::DepthMatch {
+            a,
+            a_stack,
+            b,
+            b_stack,
+            stack,
+            hands,
+            seed,
+        } => {
+            let (pa, cfg_a) = load_policy_quietly(&a, a_stack);
+            let (pb, cfg_b) = load_policy_quietly(&b, b_stack);
+            let t0 = std::time::Instant::now();
+            let r = depth_match::run(
+                &depth_match::Side { policy: &pa, cfg: cfg_a },
+                &depth_match::Side { policy: &pb, cfg: cfg_b },
+                stack,
+                hands,
+                seed,
+            );
+            let bb = stack / 100;
+            println!(
+                "{} paired hands at {bb}bb in {:.0}s\n  \
+                 A ({a_stack} chips) as hero: {:+.0} ±{:.0} mbb/hand ({:.1}% unseen, {:.1}% capped)\n  \
+                 B ({b_stack} chips) as hero: {:+.0} ±{:.0} mbb/hand\n  \
+                 cost of A playing off-depth: {:+.0} ±{:.0} mbb/hand",
+                r.hands,
+                t0.elapsed().as_secs_f64(),
+                r.a.0,
+                r.a.1,
+                100.0 * r.a_unseen,
+                100.0 * r.a_capped,
+                r.b.0,
+                r.b.1,
+                r.cost.0,
+                r.cost.1,
+            );
         }
 
         Cmd::Eval {
@@ -1416,6 +1493,29 @@ fn load_policy_strat(path: &str, strat_prev: Option<&str>) -> Policy {
         abs = abs.with_strat(load_strat_ctx(prev));
     }
     Policy::new(bp, Arc::new(abs))
+}
+
+/// Load a blueprint with diagnostics on stderr only (stdout may carry a
+/// protocol). `stack` is the depth it was trained at.
+fn load_policy_quietly(path: &str, stack: u32) -> (Policy, HandConfig) {
+    let bp = Blueprint::load(path)
+        .unwrap_or_else(|e| die(&format!("cannot load blueprint '{path}': {e}")));
+    if bp.centroids.as_ref().is_some_and(|c| c.is_strategic()) {
+        die("strategic-clustering blueprints are not supported here");
+    }
+    let cfg = HandConfig {
+        num_players: bp.num_players,
+        stack,
+        ..HandConfig::default()
+    };
+    eprintln!(
+        "{path}: {} infosets, {} players, {:?} menu",
+        bp.strategies.len(),
+        bp.num_players,
+        bp.abs_cfg.menu
+    );
+    let abs = Abstraction::with_centroids(bp.abs_cfg.clone(), bp.centroids.clone());
+    (Policy::new(bp, Arc::new(abs)), cfg)
 }
 
 fn die(msg: &str) -> ! {

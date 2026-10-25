@@ -218,7 +218,7 @@ fn play_one(
     table.real.utilities()[hero] as f64 / cfg.bb as f64 * 1000.0
 }
 
-fn mean_ci(results: &[f64]) -> (f64, f64) {
+pub fn mean_ci(results: &[f64]) -> (f64, f64) {
     let mean = results.iter().sum::<f64>() / results.len() as f64;
     let var = results.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>()
         / (results.len().saturating_sub(1)) as f64;
