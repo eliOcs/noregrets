@@ -1,24 +1,23 @@
 //! What does playing a blueprint at the wrong stack depth cost? One hero
-//! seat plays policy A through a mirror at A's training depth against a
-//! field of policy B at B's own depth, with real stacks of `stack` chips.
+//! seat plays bot A through a mirror at A's training depth against a
+//! field of bot B at B's own depth, with real stacks of `stack` chips.
 //! Every deal is played twice with the same cards, button and sampling
 //! seed: once with A as the hero, once with B. The per-deal difference is
 //! A's cost of playing off-depth, with card luck cancelled.
 
-use crate::bot::Policy;
 use crate::cards::fresh_deck;
 use crate::cfr::sample_index;
 use crate::engine::{HandConfig, PlayerAction};
-use crate::mirror::{Mirror, Source};
+use crate::mirror::{Bot, Mirror, Source};
 use crate::table::mean_ci;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
-/// A policy and the hand config it was trained at (`stack` = depth).
+/// A bot and the hand config it was trained at (`stack` = depth).
 pub struct Side<'a> {
-    pub policy: &'a Policy,
+    pub bot: &'a Bot,
     pub cfg: HandConfig,
 }
 
@@ -95,18 +94,18 @@ fn play(
             return (hm.real.utilities()[hero], counts);
         }
         let choices = if hm.real.to_act() == hero {
-            let (c, s) = hm.strategy(hero_side.policy);
+            let (c, s) = hm.strategy(hero_side.bot);
             counts.decisions += 1;
             counts.unseen += (s == Source::Unseen) as u64;
             counts.capped += (s == Source::Capped) as u64;
             c
         } else {
-            fm.strategy(field.policy).0
+            fm.strategy(field.bot).0
         };
         let probs: Vec<f64> = choices.iter().map(|c| c.1).collect();
         let a: PlayerAction = choices[sample_index(&probs, &mut rng)].0;
-        hm.apply(a, &hero_side.policy.abs);
-        fm.apply(a, &field.policy.abs);
+        hm.apply(a, &hero_side.bot.abs);
+        fm.apply(a, &field.bot.abs);
     }
     unreachable!("depth-match hand did not terminate")
 }

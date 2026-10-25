@@ -10,10 +10,9 @@
 //! caller samples it with its own RNG. Every stack depth is played as if it
 //! were the training depth; see `mirror`.
 
-use crate::bot::Policy;
 use crate::cards::{parse_card, Card};
 use crate::engine::{HandConfig, PlayerAction};
-use crate::mirror::{Mirror, Source};
+use crate::mirror::{Bot, Mirror, Source};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 
@@ -70,14 +69,14 @@ enum Response {
 }
 
 /// Answer requests until stdin closes.
-pub fn serve(policy: &Policy, cfg: &HandConfig) {
+pub fn serve(bot: &Bot, cfg: &HandConfig) {
     let mut out = std::io::stdout().lock();
     write_line(
         &mut out,
         &serde_json::json!({
             "ready": true,
             "players": cfg.num_players,
-            "infosets": policy.blueprint.strategies.len(),
+            "infosets": bot.strategies.len(),
         }),
     );
     for line in std::io::stdin().lock().lines() {
@@ -90,7 +89,7 @@ pub fn serve(policy: &Policy, cfg: &HandConfig) {
                 id: None,
                 error: format!("bad request: {e}"),
             },
-            Ok(req) => match decide(policy, cfg, &req) {
+            Ok(req) => match decide(bot, cfg, &req) {
                 Ok(d) => Response::Strategy {
                     id: req.id,
                     strategy: d.strategy,
@@ -119,7 +118,7 @@ fn write_line(out: &mut impl Write, value: &impl Serialize) {
 }
 
 /// The blueprint strategy for the seat to act in the described hand.
-pub fn decide(policy: &Policy, cfg: &HandConfig, req: &Request) -> Result<Decision, String> {
+pub fn decide(bot: &Bot, cfg: &HandConfig, req: &Request) -> Result<Decision, String> {
     let n = cfg.num_players;
     if req.stacks.len() != n {
         return Err(format!("expected {n} stacks, got {}", req.stacks.len()));
@@ -136,7 +135,7 @@ pub fn decide(policy: &Policy, cfg: &HandConfig, req: &Request) -> Result<Decisi
         return Err("the board has at most 5 cards".into());
     }
     let deck = deal(n, req.seat, hole, &board)?;
-    let mut mirror = replay(policy, cfg, req, deck)?;
+    let mut mirror = replay(bot, cfg, req, deck)?;
 
     let real = &mirror.real;
     if real.is_terminal() {
@@ -152,7 +151,7 @@ pub fn decide(policy: &Policy, cfg: &HandConfig, req: &Request) -> Result<Decisi
             real.street()
         ));
     }
-    let (choices, source) = mirror.strategy(policy);
+    let (choices, source) = mirror.strategy(bot);
     let strategy = choices
         .into_iter()
         .map(|(a, p)| Choice {
@@ -197,7 +196,7 @@ fn deal(n: usize, seat: usize, hole: [Card; 2], board: &[Card]) -> Result<[Card;
     Ok(deck)
 }
 
-fn replay(policy: &Policy, cfg: &HandConfig, req: &Request, deck: [Card; 52]) -> Result<Mirror, String> {
+fn replay(bot: &Bot, cfg: &HandConfig, req: &Request, deck: [Card; 52]) -> Result<Mirror, String> {
     let mut mirror = Mirror::new(cfg, req.button, deck, &req.stacks);
     for (i, &a) in req.actions.iter().enumerate() {
         let h = &mirror.real;
@@ -218,7 +217,7 @@ fn replay(policy: &Policy, cfg: &HandConfig, req: &Request, deck: [Card; 52]) ->
                 None => return Err(format!("action {i} raises, but no raise is legal")),
             },
         };
-        mirror.apply(action, &policy.abs);
+        mirror.apply(action, &bot.abs);
     }
     Ok(mirror)
 }
@@ -233,7 +232,7 @@ mod tests {
 
     const STACK: u32 = 10_000;
 
-    fn policy(strategies: StrategyMap) -> Policy {
+    fn bot(strategies: StrategyMap) -> Bot {
         let bp = Blueprint {
             strategies,
             iterations: 0,
@@ -241,8 +240,10 @@ mod tests {
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
-        let abs = Abstraction::new(bp.abs_cfg.clone());
-        Policy::new(bp, Arc::new(abs))
+        Bot {
+            abs: Arc::new(Abstraction::new(bp.abs_cfg.clone())),
+            strategies: Box::new(bp),
+        }
     }
 
     fn request(stacks: u32, seat: usize, hole: [&str; 2], board: &[&str], actions: Vec<Act>) -> Request {
@@ -267,20 +268,20 @@ mod tests {
     #[test]
     fn unseen_infosets_fall_back_to_check_call() {
         let req = request(STACK, UTG, ["Ah", "Kd"], &[], vec![]);
-        let d = decide(&policy(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
         assert_eq!(d.source, Source::Unseen);
         assert_eq!(d.strategy, vec![Choice { act: Act::Call, p: 1.0 }]);
     }
 
-    /// A policy whose only infoset is UTG's first decision with `hole`,
+    /// A bot whose only infoset is UTG's first decision with `hole`,
     /// weighted per abstract action by `weights(menu length)`.
-    fn utg_policy(hole: [&str; 2], weights: impl FnOnce(usize) -> Vec<f32>) -> Policy {
+    fn utg_bot(hole: [&str; 2], weights: impl FnOnce(usize) -> Vec<f32>) -> Bot {
         let cards = hole.map(|c| parse_card(c).unwrap());
         let h = Hand::new(&cfg(), 0, deal(6, UTG, cards, &[]).unwrap());
-        let menu = policy(StrategyMap::default()).abs.abstract_actions(&h).len();
+        let menu = bot(StrategyMap::default()).abs.abstract_actions(&h).len();
         let mut map = StrategyMap::default();
         map.insert(make_key(preflop_bucket(cards), &[]).to_vec(), weights(menu));
-        policy(map)
+        bot(map)
     }
 
     /// Everything on the last abstract action, which is always all-in.
@@ -292,7 +293,7 @@ mod tests {
 
     #[test]
     fn blueprint_mix_comes_back_as_concrete_actions() {
-        let p = utg_policy(["Ah", "Kd"], |menu| {
+        let p = utg_bot(["Ah", "Kd"], |menu| {
             let mut s = vec![0.0; menu];
             s[0] = 0.5; // fold
             s[menu - 1] = 0.5;
@@ -311,7 +312,7 @@ mod tests {
 
     #[test]
     fn deep_stacks_shove_only_the_training_stack() {
-        let p = utg_policy(["Ah", "Kd"], all_in);
+        let p = utg_bot(["Ah", "Kd"], all_in);
         let d = decide(&p, &cfg(), &request(3 * STACK, UTG, ["Ah", "Kd"], &[], vec![])).unwrap();
         assert_eq!(d.source, Source::Blueprint, "a deep stack still finds the training-depth infoset");
         assert_eq!(d.strategy, vec![Choice { act: Act::Raise { to: STACK }, p: 1.0 }]);
@@ -319,7 +320,7 @@ mod tests {
 
     #[test]
     fn short_stacks_shove_their_real_stack() {
-        let p = utg_policy(["Ah", "Kd"], all_in);
+        let p = utg_bot(["Ah", "Kd"], all_in);
         let d = decide(&p, &cfg(), &request(STACK / 2, UTG, ["Ah", "Kd"], &[], vec![])).unwrap();
         assert_eq!(d.source, Source::Blueprint, "a short stack still finds the training-depth infoset");
         assert_eq!(d.strategy, vec![Choice { act: Act::Raise { to: STACK / 2 }, p: 1.0 }]);
@@ -333,7 +334,7 @@ mod tests {
         actions.extend([Act::Fold; 4]);
         actions.push(Act::Call);
         let req = request(3 * STACK, 2, ["7c", "7d"], &["2h", "9s", "Kc"], actions);
-        let d = decide(&policy(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
         assert_eq!(d.source, Source::Capped);
         assert_eq!(d.strategy, vec![Choice { act: Act::Call, p: 1.0 }]);
     }
@@ -346,7 +347,7 @@ mod tests {
         actions.extend([Act::Fold; 3]);
         let mut req = request(STACK, 4, ["7c", "7d"], &["2h", "9s", "Kc"], actions);
         req.stacks[UTG] = STACK / 5;
-        let d = decide(&policy(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
         assert_eq!(d.source, Source::Unseen, "looked up on-tree, not capped");
     }
 
@@ -356,19 +357,19 @@ mod tests {
         let mut actions = vec![Act::Fold; 4];
         actions.extend([Act::Call, Act::Call]);
         let req = request(STACK, 1, ["7c", "7d"], &["2h", "9s", "Kc"], actions);
-        let d = decide(&policy(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
         assert_eq!(d.strategy, vec![Choice { act: Act::Call, p: 1.0 }]);
     }
 
     #[test]
     fn off_menu_raises_are_accepted_and_followed() {
         let req = request(STACK, 4, ["Qs", "Js"], &[], vec![Act::Raise { to: 333 }]);
-        assert!(decide(&policy(StrategyMap::default()), &cfg(), &req).is_ok());
+        assert!(decide(&bot(StrategyMap::default()), &cfg(), &req).is_ok());
     }
 
     #[test]
     fn rejects_requests_that_do_not_match_the_hand() {
-        let p = policy(StrategyMap::default());
+        let p = bot(StrategyMap::default());
         let err = |req: Request| decide(&p, &cfg(), &req).unwrap_err();
         assert!(err(request(STACK, 4, ["Ah", "Kd"], &[], vec![])).contains("seat 3 is to act"));
         assert!(err(request(STACK, UTG, ["Ah", "Ah"], &[], vec![])).contains("twice"));

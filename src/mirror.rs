@@ -16,11 +16,34 @@
 //!   shadow ignores their actions and they check/call from then on.
 
 use crate::abstraction::{AbsAction, Abstraction, TOKEN_STREET_SEP};
-use crate::bot::Policy;
 use crate::cards::Card;
+use crate::cfr::Blueprint;
 use crate::engine::{Hand, HandConfig, PlayerAction};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use std::sync::Arc;
+
+/// Blueprint strategies by infoset, whatever their storage.
+pub trait Strategies: Send + Sync {
+    /// The stored (possibly unnormalized) action weights, if any.
+    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f32>>;
+    fn len(&self) -> usize;
+}
+
+impl Strategies for Blueprint {
+    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f32>> {
+        Blueprint::get(self, bucket, hist).cloned()
+    }
+    fn len(&self) -> usize {
+        self.strategies.len()
+    }
+}
+
+/// What a bot needs to act: its card abstraction and its strategies.
+pub struct Bot {
+    pub abs: Arc<Abstraction>,
+    pub strategies: Box<dyn Strategies>,
+}
 
 /// Where a strategy came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,21 +98,30 @@ impl Mirror {
 
     /// The strategy for the player to act on the real hand, as concrete
     /// actions with probabilities (duplicates merged).
-    pub fn strategy(&mut self, policy: &Policy) -> (Vec<(PlayerAction, f64)>, Source) {
+    pub fn strategy(&mut self, bot: &Bot) -> (Vec<(PlayerAction, f64)>, Source) {
         let p = self.real.to_act();
-        if !self.sync_to(p, &policy.abs) {
+        if !self.sync_to(p, &bot.abs) {
             return (vec![(PlayerAction::CheckCall, 1.0)], Source::Capped);
         }
+        let shadow = &self.shadow;
+        let acts = bot.abs.abstract_actions(shadow);
         // Bucketing seeds its Monte Carlo draws from the cards, so this RNG
         // is never consumed; a fixed seed keeps answers reproducible anyway.
         let mut rng = SmallRng::seed_from_u64(0);
-        let shadow = &self.shadow;
-        let (acts, probs) = policy.blueprint_dist(shadow, &self.hist, &mut rng);
-        let bucket = policy.abs.bucket(shadow.hole(p), shadow.board(), &mut rng);
-        let seen = policy
-            .blueprint
-            .get(bucket, &self.hist)
-            .is_some_and(|s| s.len() == acts.len() && s.iter().sum::<f32>() > 0.0);
+        let bucket = bot.abs.bucket(shadow.hole(p), shadow.board(), &mut rng);
+        let stored = bot.strategies.get(bucket, &self.hist).filter(|s| s.len() == acts.len());
+        let total: f64 = stored.iter().flatten().map(|&x| x as f64).sum();
+        let (probs, source) = match stored {
+            Some(s) if total > 0.0 => (s.iter().map(|&x| x as f64 / total).collect(), Source::Blueprint),
+            // Unseen (or menu-mismatched) infosets check/call, like the
+            // engine's own blueprint player.
+            _ => {
+                let call = acts.iter().position(|&a| a == AbsAction::CheckCall);
+                let mut probs = vec![0.0; acts.len()];
+                probs[call.expect("check/call is always legal")] = 1.0;
+                (probs, Source::Unseen)
+            }
+        };
 
         let real = &self.real;
         let mut out: Vec<(PlayerAction, f64)> = Vec::with_capacity(acts.len());
@@ -97,7 +129,7 @@ impl Mirror {
             if p <= 0.0 {
                 continue;
             }
-            let concrete = match policy.abs.concrete(shadow, a) {
+            let concrete = match bot.abs.concrete(shadow, a) {
                 PlayerAction::Fold if real.can_check() => PlayerAction::CheckCall,
                 PlayerAction::RaiseTo(x) => match real.raise_bounds() {
                     Some((lo, hi)) => PlayerAction::RaiseTo(x.clamp(lo, hi)),
@@ -110,7 +142,7 @@ impl Mirror {
                 None => out.push((concrete, p)),
             }
         }
-        (out, if seen { Source::Blueprint } else { Source::Unseen })
+        (out, source)
     }
 
     /// Advance the shadow to `p`'s turn on the real hand's street, calling

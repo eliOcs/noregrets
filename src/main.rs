@@ -7,6 +7,7 @@ mod br;
 mod cards;
 mod cfr;
 mod clone;
+mod compact;
 mod depth_match;
 mod distill;
 mod engine;
@@ -228,6 +229,13 @@ enum Cmd {
         /// are played as if this deep.
         #[arg(long, default_value_t = 10_000)]
         stack: u32,
+    },
+    /// Export a blueprint in the compact, memory-mapped serving format.
+    Compact {
+        #[arg(long, default_value = "blueprint.bin")]
+        blueprint: String,
+        #[arg(long)]
+        out: String,
     },
     /// Measure what playing blueprint A at stacks it was not trained for
     /// costs, against a field of blueprint B trained at those stacks.
@@ -835,8 +843,24 @@ fn main() {
         }
 
         Cmd::Serve { blueprint, stack } => {
-            let (policy, cfg) = load_policy_quietly(&blueprint, stack);
-            serve::serve(&policy, &cfg);
+            let (bot, cfg) = load_bot(&blueprint, stack);
+            serve::serve(&bot, &cfg);
+        }
+
+        Cmd::Compact { blueprint, out } => {
+            let t0 = std::time::Instant::now();
+            let bp = Blueprint::load(&blueprint)
+                .unwrap_or_else(|e| die(&format!("cannot load blueprint '{blueprint}': {e}")));
+            let records = compact::write(&bp, &out)
+                .unwrap_or_else(|e| die(&format!("cannot write '{out}': {e}")));
+            let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "{records} of {} infosets -> {out} ({:.0} MB, {:.1} bytes/infoset) in {:.0}s",
+                bp.strategies.len(),
+                bytes as f64 / 1e6,
+                bytes as f64 / records.max(1) as f64,
+                t0.elapsed().as_secs_f64()
+            );
         }
 
         Cmd::DepthMatch {
@@ -848,12 +872,12 @@ fn main() {
             hands,
             seed,
         } => {
-            let (pa, cfg_a) = load_policy_quietly(&a, a_stack);
-            let (pb, cfg_b) = load_policy_quietly(&b, b_stack);
+            let (pa, cfg_a) = load_bot(&a, a_stack);
+            let (pb, cfg_b) = load_bot(&b, b_stack);
             let t0 = std::time::Instant::now();
             let r = depth_match::run(
-                &depth_match::Side { policy: &pa, cfg: cfg_a },
-                &depth_match::Side { policy: &pb, cfg: cfg_b },
+                &depth_match::Side { bot: &pa, cfg: cfg_a },
+                &depth_match::Side { bot: &pb, cfg: cfg_b },
                 stack,
                 hands,
                 seed,
@@ -863,7 +887,7 @@ fn main() {
                 "{} paired hands at {bb}bb in {:.0}s\n  \
                  A ({a_stack} chips) as hero: {:+.0} ±{:.0} mbb/hand ({:.1}% unseen, {:.1}% capped)\n  \
                  B ({b_stack} chips) as hero: {:+.0} ±{:.0} mbb/hand\n  \
-                 cost of A playing off-depth: {:+.0} ±{:.0} mbb/hand",
+                 A minus B (paired): {:+.0} ±{:.0} mbb/hand",
                 r.hands,
                 t0.elapsed().as_secs_f64(),
                 r.a.0,
@@ -1495,27 +1519,36 @@ fn load_policy_strat(path: &str, strat_prev: Option<&str>) -> Policy {
     Policy::new(bp, Arc::new(abs))
 }
 
-/// Load a blueprint with diagnostics on stderr only (stdout may carry a
-/// protocol). `stack` is the depth it was trained at.
-fn load_policy_quietly(path: &str, stack: u32) -> (Policy, HandConfig) {
-    let bp = Blueprint::load(path)
-        .unwrap_or_else(|e| die(&format!("cannot load blueprint '{path}': {e}")));
-    if bp.centroids.as_ref().is_some_and(|c| c.is_strategic()) {
+/// Load a bot from a training or compact blueprint, with diagnostics on
+/// stderr only (stdout may carry a protocol). `stack` is the depth the
+/// blueprint was trained at.
+fn load_bot(path: &str, stack: u32) -> (mirror::Bot, HandConfig) {
+    let fail = |e: std::io::Error| -> ! { die(&format!("cannot load blueprint '{path}': {e}")) };
+    let (strategies, players, abs_cfg, centroids): (Box<dyn mirror::Strategies>, _, _, _) =
+        if compact::is_compact(path) {
+            let c = compact::CompactBlueprint::open(path).unwrap_or_else(|e| fail(e));
+            let (n, cfg, cents) = (c.header.num_players, c.header.abs_cfg.clone(), c.header.centroids.clone());
+            (Box::new(c), n, cfg, cents)
+        } else {
+            let bp = Blueprint::load(path).unwrap_or_else(|e| fail(e));
+            let (n, cfg, cents) = (bp.num_players, bp.abs_cfg.clone(), bp.centroids.clone());
+            (Box::new(bp), n, cfg, cents)
+        };
+    if centroids.as_ref().is_some_and(|c| c.is_strategic()) {
         die("strategic-clustering blueprints are not supported here");
     }
+    eprintln!(
+        "{path}: {} infosets, {players} players, {:?} menu",
+        strategies.len(),
+        abs_cfg.menu
+    );
     let cfg = HandConfig {
-        num_players: bp.num_players,
+        num_players: players,
         stack,
         ..HandConfig::default()
     };
-    eprintln!(
-        "{path}: {} infosets, {} players, {:?} menu",
-        bp.strategies.len(),
-        bp.num_players,
-        bp.abs_cfg.menu
-    );
-    let abs = Abstraction::with_centroids(bp.abs_cfg.clone(), bp.centroids.clone());
-    (Policy::new(bp, Arc::new(abs)), cfg)
+    let abs = Arc::new(Abstraction::with_centroids(abs_cfg, centroids));
+    (mirror::Bot { abs, strategies }, cfg)
 }
 
 fn die(msg: &str) -> ! {
