@@ -159,6 +159,15 @@ pub enum Baseline {
     Random,
     /// Always check/call.
     Caller,
+    /// Never folds; raises the largest non-all-in size whenever it can.
+    Maniac,
+    /// All-in at every decision, whatever the cards.
+    Shover,
+    /// All-in preflop with the top ~20% of hands, folds the rest.
+    PushFold,
+    /// Plays only the top ~6% of hands: raises first in, otherwise calls,
+    /// then checks and calls postflop.
+    Nit,
 }
 
 impl std::str::FromStr for Baseline {
@@ -167,18 +176,76 @@ impl std::str::FromStr for Baseline {
         match s.to_ascii_lowercase().as_str() {
             "random" => Ok(Baseline::Random),
             "caller" => Ok(Baseline::Caller),
-            other => Err(format!("unknown baseline '{other}' (random|caller)")),
+            "maniac" => Ok(Baseline::Maniac),
+            "shover" => Ok(Baseline::Shover),
+            "push-fold" => Ok(Baseline::PushFold),
+            "nit" => Ok(Baseline::Nit),
+            other => Err(format!(
+                "unknown baseline '{other}' (random|caller|maniac|shover|push-fold|nit)"
+            )),
         }
     }
 }
 
+/// About 20% of hands (274 of 1,326 combos).
+const PUSH_FOLD_RANGE: &[&str] = &["22+", "A2s+", "A8o+", "K9s+", "KTo+", "QTs+", "QJo", "JTs"];
+/// About 6% of hands (82 of 1,326 combos).
+const NIT_RANGE: &[&str] = &["88+", "AJs+", "KQs", "AQo+"];
+
+/// Whether `hole` is in a range written like "22+", "A2s+", "KQo".
+fn in_range(hole: [crate::cards::Card; 2], range: &[&str]) -> bool {
+    let r = |ch: u8| b"23456789TJQKA".iter().position(|&c| c == ch).expect("a rank") as u8;
+    let (a, b) = (crate::cards::rank(hole[0]), crate::cards::rank(hole[1]));
+    let (hi, lo) = (a.max(b), a.min(b));
+    let suited = (hole[0] & 3) == (hole[1] & 3);
+    range.iter().any(|spec| {
+        let s = spec.as_bytes();
+        let (h, l, plus) = (r(s[0]), r(s[1]), spec.ends_with('+'));
+        if h == l {
+            return hi == lo && (hi == h || plus && hi > h);
+        }
+        let kind_ok = hi != lo && suited == (s[2] == b's');
+        kind_ok && hi == h && (lo == l || plus && lo > l && lo < h)
+    })
+}
+
+/// The smallest or largest non-all-in raise on the menu, if any.
+fn menu_bet(h: &Hand, abs: &Abstraction, largest: bool) -> Option<AbsAction> {
+    let size = |a: AbsAction| match abs.concrete(h, a) {
+        PlayerAction::RaiseTo(x) => x,
+        _ => 0,
+    };
+    let bets = abs.abstract_actions(h).into_iter().filter(|a| matches!(a, AbsAction::Bet(_)));
+    if largest { bets.max_by_key(|&a| size(a)) } else { bets.min_by_key(|&a| size(a)) }
+}
+
+fn all_in_or_call(h: &Hand, abs: &Abstraction) -> AbsAction {
+    let acts = abs.abstract_actions(h);
+    if acts.contains(&AbsAction::AllIn) { AbsAction::AllIn } else { AbsAction::CheckCall }
+}
+
+fn fold_or_check(h: &Hand) -> AbsAction {
+    if h.can_check() { AbsAction::CheckCall } else { AbsAction::Fold }
+}
+
 pub fn baseline_action(b: Baseline, h: &Hand, abs: &Abstraction, rng: &mut SmallRng) -> AbsAction {
+    let preflop = h.street() == crate::engine::Street::Preflop;
+    let hole = h.hole(h.to_act());
     match b {
         Baseline::Caller => AbsAction::CheckCall,
         Baseline::Random => {
             let acts = abs.abstract_actions(h);
             acts[rng.random_range(0..acts.len())]
         }
+        Baseline::Maniac => menu_bet(h, abs, true).unwrap_or(AbsAction::CheckCall),
+        Baseline::Shover => all_in_or_call(h, abs),
+        Baseline::PushFold if !preflop => AbsAction::CheckCall,
+        Baseline::PushFold if in_range(hole, PUSH_FOLD_RANGE) => all_in_or_call(h, abs),
+        Baseline::PushFold => fold_or_check(h),
+        Baseline::Nit if !preflop => AbsAction::CheckCall,
+        Baseline::Nit if !in_range(hole, NIT_RANGE) => fold_or_check(h),
+        Baseline::Nit if h.n_raises() == 0 => menu_bet(h, abs, false).unwrap_or(AbsAction::CheckCall),
+        Baseline::Nit => AbsAction::CheckCall,
     }
 }
 
@@ -524,6 +591,15 @@ mod tests {
     use crate::cfr::Blueprint;
     use crate::engine::Street;
     use std::collections::HashMap;
+
+    #[test]
+    fn baseline_ranges_have_their_documented_sizes() {
+        let combos = crate::search::all_combos();
+        let count = |r: &[&str]| combos.iter().filter(|&&c| in_range(c, r)).count();
+        assert_eq!(count(PUSH_FOLD_RANGE), 274);
+        assert_eq!(count(NIT_RANGE), 82);
+        assert!(in_range([crate::cards::make_card(12, 0), crate::cards::make_card(12, 1)], NIT_RANGE));
+    }
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {

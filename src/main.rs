@@ -290,7 +290,8 @@ enum Cmd {
         blueprint: String,
         #[arg(long, default_value_t = 100_000)]
         hands: u64,
-        /// Opponent type in the other seats: random | caller.
+        /// Opponent type in the other seats: random | caller | maniac |
+        /// shover | push-fold | nit.
         #[arg(long, default_value = "random")]
         baseline: Baseline,
         #[arg(long, default_value_t = 6)]

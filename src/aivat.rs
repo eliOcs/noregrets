@@ -208,7 +208,12 @@ fn play_one_aivat(
                     let probs = vec![1.0 / acts.len() as f64; acts.len()];
                     (a, Some((acts, probs, idx)))
                 }
-                Baseline::Caller => (a, None), // deterministic: correction = 0
+                // Deterministic: correction = 0.
+                Baseline::Caller
+                | Baseline::Maniac
+                | Baseline::Shover
+                | Baseline::PushFold
+                | Baseline::Nit => (a, None),
             }
         };
         if let Some((acts, probs, idx)) = decision_corr {
