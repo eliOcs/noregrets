@@ -145,6 +145,11 @@ impl Mirror {
         (out, source)
     }
 
+    /// The on-tree shadow, as of the last `strategy` call.
+    pub fn shadow(&self) -> &Hand {
+        &self.shadow
+    }
+
     /// Advance the shadow to `p`'s turn on the real hand's street, calling
     /// along for players the real hand skips. False when the shadow cannot
     /// get there: `p` is capped, or the shadow's hand or round already ended.

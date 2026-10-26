@@ -575,12 +575,15 @@ impl Abstraction {
             4 => self.centroids.as_ref().map(|c| &c.turn),
             _ => None,
         };
-        // Monte Carlo draws are seeded from the canonical key, not the
-        // caller's rng: the same (hole, board) always gets the same
-        // estimate (and therefore the same bucket, even after an eviction),
-        // and a cache miss never consumes caller draws — bucketing is
-        // deterministic regardless of thread timing or cache state.
+        // Monte Carlo runs on the canonical representative, with draws
+        // seeded from its key, not the caller's rng: every suit-isomorphic
+        // variant gets the same estimate (and therefore the same bucket,
+        // even after an eviction), equal to the one `build_bucket_table`
+        // stored, and a cache miss never consumes caller draws — bucketing
+        // is deterministic regardless of thread timing or cache state.
         let _ = rng;
+        let (hole, cboard) = decode_cards_key(ckey);
+        let board = &cboard[..board.len()];
         let mut krng = SmallRng::seed_from_u64(ckey ^ 0xD1CE_5EED_0BAD_F00D);
         let b = match street_cents {
             Some(cents) if cents.first().map(|v| v.len()) == Some(COMBINED_DIM) => {
@@ -738,6 +741,21 @@ pub(crate) fn canonical_cards_key(hole: [Card; 2], board: &[Card]) -> u64 {
         best = best.min(key);
     }
     best
+}
+
+/// The cards a `canonical_cards_key` packs: the hole low card first and
+/// the board ascending, as `build_bucket_table` enumerates representatives.
+fn decode_cards_key(key: u64) -> ([Card; 2], [Card; 5]) {
+    // The board length sits above the 2 + len six-bit cards.
+    let len = (1..=5)
+        .find(|&n| key >> (6 * (2 + n)) == n as u64)
+        .expect("a canonical cards key");
+    let card = |i: usize| ((key >> (6 * (1 + len - i))) & 0x3f) as Card;
+    let mut board = [0; 5];
+    for (i, b) in board.iter_mut().enumerate().take(len) {
+        *b = card(2 + i);
+    }
+    ([card(0), card(1)], board)
 }
 
 /// `canonical_cards_key`'s packing under the identity suit permutation
@@ -1421,6 +1439,25 @@ mod tests {
         );
         assert_eq!(a.concrete(&h, AbsAction::AllIn), PlayerAction::RaiseTo(10_000));
         assert_eq!(a.concrete(&h, AbsAction::CheckCall), PlayerAction::CheckCall);
+    }
+
+    #[test]
+    fn suit_isomorphic_variants_get_the_representatives_bucket() {
+        let abs = Abstraction::new(AbsConfig::default());
+        let fresh = || Abstraction::new(AbsConfig::default());
+        let mut rng = SmallRng::seed_from_u64(1);
+        let board = parse_cards("Kd 9d 4s 2h").unwrap();
+        let hole = parse_cards("Ad Th").unwrap();
+        let ckey = canonical_cards_key([hole[0], hole[1]], &board);
+        let (rh, rb) = decode_cards_key(ckey);
+        assert_eq!(canonical_cards_key(rh, &rb[..4]), ckey);
+        assert_eq!(identity_key(rh, &rb[..4]), ckey, "decodes to the representative");
+        let rep = abs.bucket(rh, &rb[..4], &mut rng);
+        for perm in &SUIT_PERMS {
+            let map = |c: Card| (c & !3) | perm[(c & 3) as usize];
+            let b: Vec<Card> = board.iter().map(|&c| map(c)).collect();
+            assert_eq!(fresh().bucket([map(hole[0]), map(hole[1])], &b, &mut rng), rep);
+        }
     }
 
     #[test]

@@ -8,7 +8,9 @@ mod cards;
 mod cfr;
 mod clone;
 mod compact;
+mod bucket_check;
 mod depth_match;
+mod offmenu_match;
 mod distill;
 mod engine;
 mod eval;
@@ -253,6 +255,30 @@ enum Cmd {
         /// Real stacks at the table, in chips.
         #[arg(long)]
         stack: u32,
+        #[arg(long, default_value_t = 100_000)]
+        hands: u64,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
+    /// Compare lazy flop/turn bucketing with a bucket table.
+    BucketCheck {
+        #[arg(long)]
+        table: String,
+        #[arg(long, default_value_t = 100_000)]
+        hands: u64,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
+    /// Measure what resizing bets off the menu wins against bots that
+    /// translate sizes to the log-nearest menu size.
+    OffmenuMatch {
+        #[arg(long)]
+        blueprint: String,
+        /// The blueprint's training stack in chips; the table plays at it.
+        #[arg(long, default_value_t = 10_000)]
+        stack: u32,
+        #[arg(long, value_enum)]
+        resize: offmenu_match::Resize,
         #[arg(long, default_value_t = 100_000)]
         hands: u64,
         #[arg(long, default_value_t = 42)]
@@ -860,6 +886,47 @@ fn main() {
                 bytes as f64 / 1e6,
                 bytes as f64 / records.max(1) as f64,
                 t0.elapsed().as_secs_f64()
+            );
+        }
+
+        Cmd::BucketCheck { table, hands, seed } => {
+            let t = abstraction::BucketTable::load(&table)
+                .unwrap_or_else(|e| die(&format!("cannot load bucket table '{table}': {e}")));
+            let t0 = std::time::Instant::now();
+            let [flop, turn] = bucket_check::run(&t, hands, seed);
+            let pct = |(m, n): (u64, u64)| 100.0 * m as f64 / n.max(1) as f64;
+            println!(
+                "{hands} hands in {:.0}s: lazy buckets differ from the table on {:.2}% of flops, {:.2}% of turns",
+                t0.elapsed().as_secs_f64(),
+                pct(flop),
+                pct(turn)
+            );
+        }
+
+        Cmd::OffmenuMatch {
+            blueprint,
+            stack,
+            resize,
+            hands,
+            seed,
+        } => {
+            let (bot, cfg) = load_bot(&blueprint, stack);
+            let t0 = std::time::Instant::now();
+            let r = offmenu_match::run(&bot, &cfg, resize, hands, seed);
+            println!(
+                "{} paired hands, resize {resize:?}, in {:.0}s ({:.0}% of hero bets resized)\n  \
+                 resized hero: {:+.0} ±{:.0} mbb/hand\n  \
+                 on-menu hero: {:+.0} ±{:.0} mbb/hand\n  \
+                 gain (paired): {:+.0} ±{:.0} mbb/hand",
+                r.hands,
+                t0.elapsed().as_secs_f64(),
+                100.0 * r.resized_share,
+                r.resized.0,
+                r.resized.1,
+                r.on_menu.0,
+                r.on_menu.1,
+                r.gain.0,
+                r.gain.1,
             );
         }
 
