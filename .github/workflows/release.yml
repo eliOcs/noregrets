@@ -1,0 +1,57 @@
+# Build static Linux binaries for a version tag and publish them as a
+# GitHub release. musl links statically, so the binaries run in any image
+# (Alpine, Debian or scratch) with no libc to match. Each architecture
+# builds natively; the build runs in rust:alpine on the host rather than as
+# a job container, because JavaScript actions do not run in Alpine
+# containers on ARM runners.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: |
+          docker run --rm -v "$PWD":/work -w /work rust:1-alpine \
+            cargo build --release --locked --config profile.release.strip=true
+          cp target/release/pluribus noregrets-${{ matrix.arch }}-linux-musl
+
+      - name: Check the binary is static
+        run: file noregrets-${{ matrix.arch }}-linux-musl | grep -q "static"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: noregrets-${{ matrix.arch }}
+          path: noregrets-${{ matrix.arch }}-linux-musl
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum noregrets-* > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" noregrets-* SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
