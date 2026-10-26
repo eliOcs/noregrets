@@ -1030,6 +1030,18 @@ mod tests {
         Trainer::new(Arc::new(abs), cfg)
     }
 
+    /// Train on one thread. Parallel traversals update shared regrets in a
+    /// timing-dependent order, so a multi-threaded run is a random draw
+    /// whose tail crosses the thresholds below now and then; one thread
+    /// makes the run reproducible.
+    fn run_on_one_thread(t: &Trainer, iterations: u64) {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("a one-thread pool")
+            .install(|| t.run(iterations, &|_| {}));
+    }
+
     #[test]
     fn regret_matching_math() {
         let mut out = Vec::new();
@@ -1191,7 +1203,7 @@ mod tests {
     #[test]
     fn push_fold_convergence() {
         let t = push_fold_trainer();
-        t.run(80_000, &|_| {});
+        run_on_one_thread(&t, 80_000);
         assert!(t.node_count() > 100);
 
         let aa = preflop_bucket([make_card(12, 0), make_card(12, 1)]);
@@ -1305,7 +1317,7 @@ mod tests {
         t.cfg.prune_after = 1_000; // prune almost from the start
         t.cfg.prune_threshold = -1.0; // ...anything with negative regret
         t.cfg.pluribus_prune = true;
-        t.run(60_000, &|_| {});
+        run_on_one_thread(&t, 60_000);
         let aa = preflop_bucket([make_card(12, 0), make_card(12, 1)]);
         let shove_hist = [AbsAction::AllIn.token()];
         let aa_call = t.avg_strategy(aa, &shove_hist).expect("AA-vs-shove visited");
