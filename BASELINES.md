@@ -1262,3 +1262,97 @@ Remaining suspect: the absolute pruning threshold (−3e8) against
 linearly weighted regrets, which past ~300M iterations prunes almost
 every negative-regret action 95% of the time. Test: `--prune-threshold`
 scaled with the run length.
+
+## 2026-10-28 — Rented 1.6B run and a scaled pruning threshold: both NULL
+
+- Code: release `v0.1.0` (`238e37eb2499af0d718f5bb04c4b8b649a3671ed`),
+  binary `noregrets-aarch64-linux-musl` sha256
+  `06d4cde7fae3962c68cac3cb3b9834a83e9d29b029339c542d39cc2429692632`;
+  rounded serving files from `compact --steps 20` at `6cd5190`
+- Hardware: AWS m8g.24xlarge spot (96 Graviton4 vCPUs, 371 GB), 400 GB gp3
+- Bucket table: `buckets.bin` sha256
+  `3d2c51bb10df71066179608e189b97f683c3ef8bd4a3cae06f8c869f963eb9cb`
+- Control: `it-800m.bin` sha256
+  `44d8fd600086c14dec5c172613b40ef41fd779f343857c60500f3d1d26ccafd8`
+  (140,278,373 strategies; seed 0, bucket table, defaults), the blueprint
+  Pluton Poker serves
+- The new blueprints lived only on the rented instance, which is
+  terminated, so they have no hashes: `bp-1.6b.bin` 6,749,205,359 bytes,
+  163,462,991 strategies; `bp-p800m.bin` 5,723,810,093 bytes, 139,720,165
+  strategies
+
+Motive: Pluton Poker's players see the bot shove far too often. The test
+was whether more compute or the open pruning suspect (end of the 50-bucket
+1B record) fixes it, within a $25 rented budget. The whole session cost
+about $6.
+
+### 1.6B iterations: the plateau holds
+
+`train --iters 1600000000 --bucket-table buckets.bin` (seed 0,
+defaults): 8,147 s, 196,401 iters/s, 198.8M infosets, 61 GB peak RSS.
+Probes at 20k hands, as in A4 local.
+
+| Probe | it-800m | 1.6B |
+|-------|--------:|-----:|
+| multiway LBR s1 | +468.4 ±253.1 | +504.5 ±221.4 |
+| multiway LBR s2 | +610.3 ±238.1 | +610.7 ±217.0 |
+| heads-up BR s1 | +251.6 ±260.4 | +209.2 ±258.4 |
+| `benchmark` preflop top-1 / mean prob | 77.4% / 0.734 | 78.6% / 0.751 |
+| `benchmark` total top-1 / mean prob | 73.9% / 0.684 | 74.6% / 0.699 |
+
+VERDICT: twice the iterations is indistinguishable on both probes and
+matches A4 local's ~+600 multiway plateau past 500M; agreement with
+Pluribus gains 1.2 points preflop and nothing postflop. The planned 3.2B
+and 6.4B segments were not run.
+
+### Pruning threshold scaled to the run length — NEGATIVE
+
+Regret updates carry the linear weight t, so `--prune-threshold` in
+chips per current update is threshold / t: the default −3e8 is −3 chips
+at 100M (where heads-up had converged) and −0.375 at 800M. The arm keeps
+−3 chips at the end of a 1.6B run: `train --iters 800000000
+--prune-threshold=-4800000000 --bucket-table buckets.bin`, 3,915 s,
+204,370 iters/s, 170.1M infosets, 59 GB peak RSS. Its rate was not lower
+than the control's 1.6B average, but no same-length control rate was
+measured on this machine. Paired probes vs `it-800m`, seeds 1-8, 20k
+hands.
+
+| Probe | it-800m mean | scaled mean | paired scaled − default |
+|-------|-------------:|------------:|------------------------:|
+| multiway LBR | +618.1 | +610.1 | **−8.0 ±154** (t=0.1), better 3/8 |
+| heads-up BR | +365.2 | +335.0 | **−30.2 ±72** (t=1.0), better 6/8 |
+| `benchmark` preflop | 77.4% / 0.734 | 77.2% / 0.736 | |
+| `benchmark` total | 73.9% / 0.684 | 73.6% / 0.683 | |
+
+Per seed it-800m multiway: +468 +610 +829 +573 +862 +460 +585 +558;
+scaled: +443 +713 +455 +597 +688 +566 +663 +754. it-800m heads-up: +252
++299 +522 +218 +306 +552 +314 +460; scaled: +291 +298 +449 +343 +224
++535 +231 +311.
+
+VERDICT: closed. The absolute threshold is not why the bound stops
+falling. With the linear cap, 50 buckets and the threshold all null, no
+open suspect remains for the plateau under this recipe.
+
+### Preflop: premium hands move all-in half the time
+
+A probe of every starting hand facing a 3bb open at 100bb, served from
+`compact --steps 20` files: the overall all-in share and the unweighted
+mean all-in share of KK, QQ, JJ, TT, AKs and AKo.
+
+| Spot | it-800m all-in / premium | 1.6B | scaled 800M |
+|------|------------------------:|-----:|------------:|
+| BB vs BTN | 3.3% / 48.8% | 2.7% / 49.8% | 3.7% / 56.7% |
+| BB vs UTG | 1.8% / 44.4% | 1.4% / 38.4% | 2.0% / 50.2% |
+| BTN vs CO | 1.6% / 32.7% | 1.7% / 38.4% | 2.1% / 41.1% |
+| SB vs BTN | 2.5% / 41.9% | 2.3% / 42.0% | 3.0% / 39.2% |
+
+The menu also offers re-raises to 6, 9.1 and 15.4bb, yet those hands jam
+100bb over a 3bb open about half the time. That is unlike 100bb solver
+outputs, and neither iterations (also flat from 50M to 800M) nor the
+threshold moves it. Unexplained; it is the visible weakness at a table of
+people, and a cheaper target than the exploitability plateau. The raw
+average strategy also keeps 0.4–2.4% on every action (it-800m BB vs BTN:
+KJo jams 2.4%, 72o 0.8%). `--steps 20` rounds shares to 5% and removes
+that residue (BB vs BTN all-in 4.1% → 3.3%) without moving the premium
+jams. Serving p99 ≤ 0.05 ms in the probe; compact files are 1.06 GB at
+800M and 1.23 GB at 1.6B.

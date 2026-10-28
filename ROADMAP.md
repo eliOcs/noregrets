@@ -207,6 +207,12 @@ buckets at Pluribus's visit density is one 3-day run on a 192-vCPU,
 384GB+ instance, roughly $1,000 on-demand. Do not rent before A1-A3 are
 measured; the run must be the final recipe, not a guess.
 Gate: paired BR vs the 12-bucket blueprint at equal wall-clock.
+**Status 28 Oct: a rented 1.6B run (12 buckets) matches 800M on both
+probes, so the ~+600 multiway plateau holds at twice A4 local's
+iterations; a pruning threshold scaled to the run length is null too
+(paired −8 ±154 multiway, −30 ±72 heads-up). Under the current recipe,
+renting more iterations buys nothing. Preflop, premium hands still jam
+100bb over a 3bb open about half the time at every budget.**
 
 **A5. Remaining recipe audit.** *Days each, cheap, run opportunistically.*
 Each is a deviation from the supplement and each gets the 30M loop:
@@ -214,10 +220,13 @@ Each is a deviation from the supplement and each gets the 30M loop:
   strategy: tested as snapshots and closed (worse). Not revisiting.
 - Regret storage as i32 with the -310M floor: memory only; do it when a
   bigger run needs it.
+- Pruning threshold scaled to the run length (it is absolute, and regrets
+  carry the linear weight): closed, null at 800M on 8 paired seeds.
 - Strategy update interval: Pluribus accumulates the preflop average only
   every 10,000 iterations in a separate pass; we accumulate on every
   opponent-node visit. Cheaper per iteration if matched; unmeasured
-  effect on quality.
+  effect on quality. It is the one untested deviation confined to
+  preflop, where the premium-jam behaviour is.
 - Continuation strategies at flop leaves: we use the four Pluribus biases
   with a fixed 5x multiplier; Pluribus's exact multipliers are not
   published, so sweep {2, 5, 10}.
