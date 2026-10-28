@@ -8,7 +8,8 @@
 //! - each record is `[shared u8][suffix_len u8][suffix][n u8][n x u8]`, where
 //!   `shared` is the prefix length it shares with the previous key in its
 //!   block (sorted keys share bucket and history prefixes), and the action
-//!   weights are quantized to bytes summing to 255;
+//!   weights are each action's share rounded to whole steps (see
+//!   [`quantize`]), so they sum to about the step count;
 //! - every `BLOCK` records a block starts with a full key. A dense index of
 //!   block offsets plus a blob of each block's first key lets a lookup
 //!   binary-search blocks touching only index pages, then scan one block.
@@ -60,31 +61,35 @@ pub fn is_compact(path: &str) -> bool {
         .is_ok_and(|_| &magic == MAGIC)
 }
 
-/// Quantize weights to bytes summing to 255 by largest remainder. `None`
-/// when the weights carry no strategy (all zero).
-pub fn quantize(weights: &[f32]) -> Option<Vec<u8>> {
+/// Round each action's share to the nearest of `steps` steps and store the
+/// step counts. Readers normalize weights, so the bytes need not sum to
+/// `steps` exactly. Each share is rounded on its own, up as readily as
+/// down, so coarse steps (20 = 5%) remove the residue that MCCFR's average
+/// strategy leaves on every action without favouring any of them. If every
+/// share rounds to zero, the top action keeps one step. `None` when the
+/// weights carry no strategy (all zero).
+pub fn quantize(weights: &[f32], steps: u8) -> Option<Vec<u8>> {
     let total: f64 = weights.iter().map(|&w| w.max(0.0) as f64).sum();
     if total <= 0.0 {
         return None;
     }
-    let scaled: Vec<f64> = weights.iter().map(|&w| w.max(0.0) as f64 / total * 255.0).collect();
-    let mut q: Vec<u8> = scaled.iter().map(|x| x.floor() as u8).collect();
-    let short = 255 - q.iter().map(|&b| b as u32).sum::<u32>();
-    let mut order: Vec<usize> = (0..q.len()).collect();
-    order.sort_by(|&a, &b| (scaled[b] - scaled[b].floor()).total_cmp(&(scaled[a] - scaled[a].floor())));
-    for &i in order.iter().take(short as usize) {
-        q[i] += 1;
+    let mut q: Vec<u8> =
+        weights.iter().map(|&w| (w.max(0.0) as f64 / total * steps as f64).round() as u8).collect();
+    if q.iter().all(|&b| b == 0) {
+        let top = (0..weights.len()).max_by(|&a, &b| weights[a].total_cmp(&weights[b])).unwrap();
+        q[top] = 1;
     }
     Some(q)
 }
 
-/// Write `bp` in the compact format. Infosets without a strategy are
-/// dropped; lookups treat them as unseen, as the hash map does.
-pub fn write(bp: &Blueprint, path: &str) -> std::io::Result<u64> {
+/// Write `bp` in the compact format, with strategies in `steps` steps (see
+/// [`quantize`]). Infosets without a strategy are dropped; lookups treat
+/// them as unseen, as the hash map does.
+pub fn write(bp: &Blueprint, path: &str, steps: u8) -> std::io::Result<u64> {
     let mut entries: Vec<(&[u8], Vec<u8>)> = bp
         .strategies
         .iter()
-        .filter_map(|(k, v)| quantize(v).map(|q| (k.as_slice(), q)))
+        .filter_map(|(k, v)| quantize(v, steps).map(|q| (k.as_slice(), q)))
         .collect();
     entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
@@ -255,7 +260,7 @@ mod tests {
     fn roundtrip(bp: &Blueprint, name: &str) -> CompactBlueprint {
         let path = std::env::temp_dir().join(format!("nr-compact-{name}-{}.bin", std::process::id()));
         let path = path.to_str().unwrap();
-        write(bp, path).unwrap();
+        write(bp, path, 255).unwrap();
         assert!(is_compact(path));
         let c = CompactBlueprint::open(path).unwrap();
         std::fs::remove_file(path).unwrap();
@@ -269,7 +274,7 @@ mod tests {
         assert_eq!(c.header.records, 5_000);
         assert_eq!(c.header.iterations, 7);
         for (key, weights) in &bp.strategies {
-            assert_eq!(c.lookup(key), Some(quantize(weights).unwrap().as_slice()), "key {key:?}");
+            assert_eq!(c.lookup(key), Some(quantize(weights, 255).unwrap().as_slice()), "key {key:?}");
         }
     }
 
@@ -287,15 +292,30 @@ mod tests {
     }
 
     #[test]
-    fn quantized_weights_sum_to_255_and_keep_the_top_action() {
+    fn quantized_shares_round_to_the_nearest_step_and_keep_the_top_action() {
         let mut rng = SmallRng::seed_from_u64(4);
-        for _ in 0..1_000 {
-            let w: Vec<f32> = (0..rng.random_range(1..8)).map(|_| rng.random::<f32>().powi(3)).collect();
-            let q = quantize(&w).unwrap();
-            assert_eq!(q.iter().map(|&b| b as u32).sum::<u32>(), 255);
-            let top = |v: &[f32]| (0..v.len()).max_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
-            assert!(q[top(&w)] > 0);
+        for steps in [255u8, 20] {
+            for _ in 0..1_000 {
+                let w: Vec<f32> = (0..rng.random_range(1..8)).map(|_| rng.random::<f32>().powi(3)).collect();
+                let total: f32 = w.iter().sum();
+                let q = quantize(&w, steps).unwrap();
+                for (&x, &b) in w.iter().zip(&q) {
+                    assert!((x / total * steps as f32 - b as f32).abs() <= 0.5 + 1e-4, "{w:?} -> {q:?}");
+                }
+                let top = |v: &[f32]| (0..v.len()).max_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
+                assert!(q[top(&w)] > 0);
+            }
         }
-        assert_eq!(quantize(&[0.0, 0.0]), None);
+        assert_eq!(quantize(&[0.0, 0.0], 20), None);
+        assert_eq!(quantize(&[1.0; 50], 20).unwrap().iter().filter(|&&b| b > 0).count(), 1);
+    }
+
+    #[test]
+    fn coarse_steps_drop_residue_and_round_small_shares_both_ways() {
+        // Big blind with K-J offsuit facing a 3bb button open, 800M blueprint:
+        // fold, call, raises to 6, 9.1 and 15.4bb, all-in. The 2.3% shove and
+        // 2% raise round down; the 3.5% raise rounds up.
+        let w = [0.071, 0.8, 0.035, 0.051, 0.02, 0.023];
+        assert_eq!(quantize(&w, 20).unwrap(), vec![1, 16, 1, 1, 0, 0]);
     }
 }

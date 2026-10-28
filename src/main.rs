@@ -238,6 +238,11 @@ enum Cmd {
         blueprint: String,
         #[arg(long)]
         out: String,
+        /// Round each action's share to the nearest 1/STEPS. 20 plays mixes
+        /// in 5% steps, dropping the small residue training leaves on every
+        /// action; 255 keeps the strategy as trained.
+        #[arg(long, default_value_t = 255, value_parser = clap::value_parser!(u8).range(1..))]
+        steps: u8,
     },
     /// Measure what playing blueprint A at stacks it was not trained for
     /// costs, against a field of blueprint B trained at those stacks.
@@ -874,11 +879,11 @@ fn main() {
             serve::serve(&bot, &cfg);
         }
 
-        Cmd::Compact { blueprint, out } => {
+        Cmd::Compact { blueprint, out, steps } => {
             let t0 = std::time::Instant::now();
             let bp = Blueprint::load(&blueprint)
                 .unwrap_or_else(|e| die(&format!("cannot load blueprint '{blueprint}': {e}")));
-            let records = compact::write(&bp, &out)
+            let records = compact::write(&bp, &out, steps)
                 .unwrap_or_else(|e| die(&format!("cannot write '{out}': {e}")));
             let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             println!(
