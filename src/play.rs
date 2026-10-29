@@ -70,7 +70,7 @@ pub fn play(policy: &Policy, opts: &PlayOpts) {
                             abs_a,
                             &table.shadow,
                             &table.hist,
-                            &policy.blueprint,
+                            &*policy.strategies,
                             &policy.abs,
                         );
                         table.apply_concrete(act, &policy.abs);
@@ -103,7 +103,7 @@ pub fn play(policy: &Policy, opts: &PlayOpts) {
                     a,
                     &table.shadow,
                     &table.hist,
-                    &policy.blueprint,
+                    &*policy.strategies,
                     &policy.abs,
                 );
                 table.apply_abs(a, &policy.abs);

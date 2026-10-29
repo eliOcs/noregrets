@@ -21,21 +21,56 @@ use crate::cfr::Blueprint;
 use crate::engine::{Hand, HandConfig, PlayerAction};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 /// Blueprint strategies by infoset, whatever their storage.
 pub trait Strategies: Send + Sync {
-    /// The stored (possibly unnormalized) action weights, if any.
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f32>>;
+    /// The stored (possibly unnormalized) action weights, if any:
+    /// borrowed where they are stored as floats, decoded otherwise.
+    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>>;
     fn len(&self) -> usize;
 }
 
 impl Strategies for Blueprint {
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f32>> {
-        Blueprint::get(self, bucket, hist).cloned()
+    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>> {
+        Blueprint::get(self, bucket, hist).map(|s| Cow::Borrowed(s.as_slice()))
     }
     fn len(&self) -> usize {
         self.strategies.len()
+    }
+}
+
+/// Strategies shared between a served bot and its search `Policy`.
+impl<T: Strategies + ?Sized> Strategies for Arc<T> {
+    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>> {
+        (**self).get(bucket, hist)
+    }
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+}
+
+/// Preflop strategies from one source over everything else from another
+/// (a preflop refinement served over the blueprint it refined). A key is
+/// preflop when its history has no street separator.
+pub struct PreflopOverlay {
+    /// Training or compact; only its preflop keys are read.
+    pub preflop: Box<dyn Strategies>,
+    pub base: Box<dyn Strategies>,
+}
+
+impl Strategies for PreflopOverlay {
+    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>> {
+        if !hist.contains(&TOKEN_STREET_SEP) {
+            if let Some(s) = self.preflop.get(bucket, hist) {
+                return Some(s);
+            }
+        }
+        self.base.get(bucket, hist)
+    }
+    fn len(&self) -> usize {
+        self.base.len()
     }
 }
 
@@ -54,12 +89,25 @@ pub enum Source {
     Unseen,
     /// The bot already committed a training stack's worth: it checks/calls.
     Capped,
+    /// Online search resolved the spot.
+    Search,
+}
+
+/// One shadow action and the state it was taken from: what a range
+/// tracker observes.
+#[derive(Clone)]
+pub struct Observed {
+    pub seat: usize,
+    pub action: AbsAction,
+    pub shadow: Hand,
+    pub hist: Vec<u8>,
 }
 
 pub struct Mirror {
     pub real: Hand,
     shadow: Hand,
     hist: Vec<u8>,
+    log: Option<Vec<Observed>>,
 }
 
 impl Mirror {
@@ -69,7 +117,32 @@ impl Mirror {
             real: Hand::new_with_stacks(cfg, button, deck, stacks),
             shadow: Hand::new(cfg, button, deck),
             hist: Vec::with_capacity(32),
+            log: None,
         }
+    }
+
+    /// Record every shadow action from here on (see `log`).
+    pub fn with_log(mut self) -> Mirror {
+        self.log = Some(Vec::new());
+        self
+    }
+
+    /// The shadow actions so far, auto-calls included, in order; empty
+    /// unless built `with_log`.
+    pub fn log(&self) -> &[Observed] {
+        self.log.as_deref().unwrap_or(&[])
+    }
+
+    /// The shadow's abstract action history.
+    pub fn hist(&self) -> &[u8] {
+        &self.hist
+    }
+
+    /// Bring the shadow to the real hand's player to act. False when that
+    /// player is capped and can only check/call.
+    pub fn sync(&mut self, abs: &Abstraction) -> bool {
+        let p = self.real.to_act();
+        self.sync_to(p, abs)
     }
 
     /// Apply the real hand's next action; the shadow follows on-tree.
@@ -110,7 +183,7 @@ impl Mirror {
         let mut rng = SmallRng::seed_from_u64(0);
         let bucket = bot.abs.bucket(shadow.hole(p), shadow.board(), &mut rng);
         let stored = bot.strategies.get(bucket, &self.hist).filter(|s| s.len() == acts.len());
-        let total: f64 = stored.iter().flatten().map(|&x| x as f64).sum();
+        let total: f64 = stored.as_deref().into_iter().flatten().map(|&x| x as f64).sum();
         let (probs, source) = match stored {
             Some(s) if total > 0.0 => (s.iter().map(|&x| x as f64 / total).collect(), Source::Blueprint),
             // Unseen (or menu-mismatched) infosets check/call, like the
@@ -123,13 +196,19 @@ impl Mirror {
             }
         };
 
-        let real = &self.real;
+        (self.concrete(&bot.abs, &acts, &probs), source)
+    }
+
+    /// Abstract shadow actions with probabilities as concrete actions on the
+    /// real hand (duplicates merged). Call after `sync`.
+    pub fn concrete(&self, abs: &Abstraction, acts: &[AbsAction], probs: &[f64]) -> Vec<(PlayerAction, f64)> {
+        let (real, shadow) = (&self.real, &self.shadow);
         let mut out: Vec<(PlayerAction, f64)> = Vec::with_capacity(acts.len());
-        for (&a, p) in acts.iter().zip(probs) {
+        for (&a, &p) in acts.iter().zip(probs) {
             if p <= 0.0 {
                 continue;
             }
-            let concrete = match bot.abs.concrete(shadow, a) {
+            let concrete = match abs.concrete(shadow, a) {
                 PlayerAction::Fold if real.can_check() => PlayerAction::CheckCall,
                 PlayerAction::RaiseTo(x) => match real.raise_bounds() {
                     Some((lo, hi)) => PlayerAction::RaiseTo(x.clamp(lo, hi)),
@@ -142,7 +221,7 @@ impl Mirror {
                 None => out.push((concrete, p)),
             }
         }
-        (out, source)
+        out
     }
 
     /// The on-tree shadow, as of the last `strategy` call.
@@ -189,6 +268,14 @@ impl Mirror {
     }
 
     fn shadow_apply(&mut self, a: AbsAction, abs: &Abstraction) {
+        if let Some(log) = &mut self.log {
+            log.push(Observed {
+                seat: self.shadow.to_act(),
+                action: a,
+                shadow: self.shadow.clone(),
+                hist: self.hist.clone(),
+            });
+        }
         let street = self.shadow.street();
         self.shadow.apply(abs.concrete(&self.shadow, a));
         self.hist.push(a.token());

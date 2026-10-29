@@ -222,9 +222,9 @@ impl CompactBlueprint {
 }
 
 impl Strategies for CompactBlueprint {
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f32>> {
+    fn get(&self, bucket: u16, hist: &[u8]) -> Option<std::borrow::Cow<'_, [f32]>> {
         self.lookup(&make_key(bucket, hist))
-            .map(|q| q.iter().map(|&b| b as f32).collect())
+            .map(|q| std::borrow::Cow::Owned(q.iter().map(|&b| b as f32).collect()))
     }
     fn len(&self) -> usize {
         self.header.records as usize

@@ -1356,3 +1356,506 @@ KJo jams 2.4%, 72o 0.8%). `--steps 20` rounds shares to 5% and removes
 that residue (BB vs BTN all-in 4.1% → 3.3%) without moving the premium
 jams. Serving p99 ≤ 0.05 ms in the probe; compact files are 1.06 GB at
 800M and 1.23 GB at 1.6B.
+
+## 2026-10-28 — Why premiums jam and callers call: averaging residue, a vanishing regret floor and reach-weighted averages
+
+- Code: working tree on `serve` after `d33caf8` (new: `preflop-probe`,
+  `action-ev`, `refine-preflop`, `merge-preflop`; `train --floor-per-weight
+  --floor-preflop-only --prune-per-weight --preflop-explore
+  --preflop-sweep-every --save-at`). Rented-run source tarballs, sha256:
+  deep arm: the first tarball (floor options only, not hashed); arms A/C/D
+  `314f54ff…`, E `481ea35e…`, merges `ba472133…`, F/G `9200e33b…`
+- Hardware: local 12-core x86_64 (31 GB) for 30M arms, probes and
+  refinements; AWS m8g.24xlarge spot (eu-west-1b, 96 vCPUs) for 800M arms
+  and every 800M gate
+- Control: `it-800m.bin` `44d8fd60…` (verified on the instance), gate
+  numbers per seed from the 2026-10-28 record above (probe code unchanged
+  since v0.1.0)
+- Bucket table `buckets.bin` `3d2c51bb…`; Pluribus hands from
+  uoftcprg/phh-dataset `data/pluribus` (10,005 files)
+
+### Diagnosis: the jam is the best response to the blueprint's own ranges
+
+`action-ev` forces each action for a hand at a preflop node, lets everyone
+(the hero included) play the blueprint afterwards and weights deals by the
+blueprint's reach of the line. it-800m, 2M deals per hand, value of the
+action minus the blueprint's mix (bb):
+
+| Spot | KK jam | QQ jam | JJ jam | AKo jam | best 3-bet |
+|------|-------:|-------:|-------:|--------:|-----------:|
+| BB vs BTN 2.9bb | +0.23 | +0.31 | +0.64 | +0.49 | ≤ +0.14 |
+| BB vs UTG | +0.68 | +0.82 | +1.46 | +0.59 | ≤ +0.43 |
+| BTN vs CO | +0.39 | +0.40 | +1.04 | +0.43 | ≤ +0.60 |
+| SB vs BTN | +0.23 | +0.20 | +0.46 | +0.55 | ≤ +0.52 |
+
+So the jams are not an exploration failure of the 3-bet: against the
+blueprint's continuation the jam is worth the most. The reason is the
+callers. BTN facing a BB jam over its open calls 99 91%, 88 62%, AQo 91%,
+AJs 83%, KQs 85%, and against the blueprint's jam range those calls are
+right (88: +4.0bb over folding), because 41% of the BB's jam combos come
+from classes that jam under 5% of the time (KJo, A2o-A9o, K3s...). That
+residue share is about 40% at every probed spot, and the absolute junk-jam
+mass grows with training (BB vs BTN, % of combos: 0.7 at 10M, 1.3 at 30M,
+1.8 at 100M, ~1.7 to 800M) instead of shrinking.
+
+`action-ev --hands all` reports, per node, what a best response at that
+node alone gains over the mix per reaching hand. it-800m: BB cold-calling
+a BTN jam over a UTG open **3.13bb** (calls 74s 99%, Q7s 99%, K9s 100%,
+ATo 42%; each costs 10-29bb), BTN facing a BB jam 0.84bb, BB 3-bet/jam
+decision 0.28bb.
+
+Two mechanisms explain this, both in `cfr.rs`:
+
+1. **The regret floor vanishes.** Updates carry the linear weight t; the
+   floor is the absolute 2 × −3e8, which at 800M is under one chip of a
+   current update. Negative regret is forgotten after one lucky sample, so
+   late training is stochastic RM+: a junk jam that wins the blinds 90% of
+   the time keeps a positive regret excursion of order σ²/2|μ| and a
+   steady share of the current strategy.
+2. **The average is weighted by other players' reach.** The average
+   strategy is accumulated at sampled opponent-node visits; with six
+   players a visit's probability includes the other non-traversers'
+   reach, so a cold-caller's average is dominated by the iterations in
+   which the jammer's current strategy jammed junk, when calling wide was
+   right (GOAL item 2).
+
+### Deep regret floor (−3e8·t everywhere), 800M — symptom fixed, gates NEGATIVE
+
+`train --iters 800000000 --floor-per-weight 3e8` (958s on 96 threads,
+835k iters/s, 124M infosets, 94.6M strategies; `deep.bin` `e6dbfe56…`).
+
+| Probe | it-800m | deep floor | paired |
+|-------|--------:|-----------:|-------:|
+| multiway LBR | +618.1 | +818.5 | **+200 ±160** (t=3.0), better 1/8 |
+| heads-up BR | +365.2 | +662.2 | **+297 ±118** (t=6.0), better 0/8 |
+| `benchmark` preflop / total | 77.4% / 73.9% | 76.6% / 72.1% | |
+| premium jam share, 4 spots | 33–48% | 6–18% | |
+
+Per seed multiway +614 +910 +745 +615 +1048 +1031 +791 +795; heads-up
++378 +746 +752 +744 +680 +713 +531 +755. KK in the BB vs a BTN open now
+raises to 6bb 88% and the jam is worth −1.77bb against the mix. At 30M
+(local, seeds 1-3) the deep floor was already worse on both probes
+(multiway +2827 vs +2511, heads-up +987 vs +613). VERDICT: a deep floor
+everywhere locks in early postflop mistakes; not adopted.
+
+### Moderate floor (−1e6·t everywhere), 800M — NEGATIVE
+
+`--floor-per-weight 1e6`, 24 threads (3,196s), `C.bin` `60117e92…`.
+Multiway **+216 ±134** (t=3.8), heads-up **+270 ±141** (t=4.5), both
+worse 8/8; benchmark 76.8% / 72.0%. Per seed multiway +718 +801 +892
++630 +931 +937 +791 +977; heads-up +717 +484 +538 +642 +667 +679 +468
++889. Premium jams 2–26%, node gains: cold-call 6.12, BTN vs jam 0.53,
+BB decision 0.175. VERDICT: closed; any floor change that reaches
+postflop costs both bounds.
+
+### Preflop exploration — NEGATIVE at 30M, not completed at 800M
+
+`--preflop-explore 0.1` (others' preflop actions from 0.9σ + 0.1 uniform,
+importance-weighted; unit test keeps the push/fold fixed point), local 30M
+seeds 1-3 vs the default arm: multiway +3133 vs +2511, heads-up +1186 vs
++613. Combined with a preflop-only deep floor (`E`): +3006 / +921. At
+200M on the instance the explored arms' cold-call node gains (A 6.07, D
+6.46, E 5.77) were no better than the unexplored control's (it-200m 5.10).
+Arms A (−1e6·t floor + explore), B (−3e8·t + explore) and D (explore
+only) were stopped to free the machine; E was stopped by mistake at 400M.
+
+### Preflop re-solved over frozen postflop (`refine-preflop`), merged into it-800m
+
+MCCFR on the preflop tree only (floor −3e8·t), every traversal finishing
+the hand from it-800m's postflop for all players; 1B iterations locally
+(893s, 1.1M iters/s, 33M preflop strategies). `merge-preflop` keeps the
+base's strategy where the refinement never reached.
+
+| Arm | premium jams (4 spots) | cold-call / BTN-vs-jam / BB node gain (bb) | multiway paired | heads-up paired | benchmark pre / total |
+|-----|-----------------------:|-------------------------------------------:|----------------:|----------------:|----------------------:|
+| it-800m | 33–48% | 3.13 / 0.84 / 0.28 | – | – | 77.4 / 73.9 |
+| M1: refine, visit-weighted average (`r800-1b.bin` `21dd9fa4…`, merged `e50099b9…`) | 3.6–15.8% | 5.79 / 0.24 / 0.23 | **+154 ±120** (t=3.0), better 1/8 | +60 ±137 (t=1.0) | 76.3 / 73.1 |
+| M2: refine + own-reach sweep every 5M (`r800-sw.bin` `bed64ca3…`, merged `3ad3fce7…`) | 1.8–9.4% | 4.79 / 0.26 / 0.22 | +93 ±137 (t=1.6), better 2/8 | +24 ±121 (t=0.5), better 2/8 | 76.6 / 73.3 |
+
+Per seed M1 multiway +556 +824 +683 +839 +943 +690 +792 +854, heads-up
++310 +479 +251 +476 +499 +544 +318 +522; M2 multiway +713 +913 +671 +602
++789 +617 +603 +781, heads-up +342 +364 +273 +410 +346 +717 +200 +465.
+M2 facing a 2.9bb UTG open: a later seat jams 0.2–1.0% of hands (it-800m
+1.8–2.7%), so some bot jams about 3% of the time (it-800m about 11%);
+the cold-caller's range is AA–JJ, AK, AQs, AJs (it-800m: plus K9s, Q7s,
+74s and offsuit broadways). The cold-call node gain stays high because the
+jams it faces are now premiums and the remaining mistakes (Q8o, 86o, 63s
+still calling) each cost 30–60bb.
+
+VERDICT: the own-reach sweep is what tightens the callers (M2 vs M1 on
+the node gains and both bounds). Neither merge lowers the multiway bound;
+M1 raises it. A re-solved preflop over a postflop trained for the old
+preflop ranges is not adoptable on the gates; M2 is the best preflop for
+players but unproven on exploitability. Next: the sweep inside full
+training (arms F, G below), where postflop learns against the same
+current strategies as the control.
+
+### Own-reach sweep inside full 800M training (arms F, G)
+
+Both arms train exactly like it-800m (same seed, menu, pruning, 96
+threads on the rented m8g.24xlarge) except that preflop averages come
+only from `--preflop-sweep-every 5000000`, never from sampled visits.
+F also floors preflop regrets at −3e8·t (`--floor-per-weight 3e8
+--floor-preflop-only`); G changes nothing else. Gates are paired against
+it-800m's per-seed numbers above (multiway +618.1, heads-up +365.2).
+
+F (`F.bin` `b21ba330…`, 800M in 1954s, 115M infosets):
+
+| Snapshot | all-in share of combos, premium jam share, over the four spots ('f f f r3 f', 'r3 f f f f', 'f f r3', 'f f f r3') |
+|----------|------------------------------------------------------------------------------------------------------------------|
+| 200M | 0.8 / 0.6 / 1.9 / 2.3%; premiums 12.6 / 11.4 / 38.5 / 30.1% |
+| 400M | 0.2 / 0.2 / 1.4 / 1.6%; premiums 3.7 / 3.3 / 37.4 / 12.6% |
+| 800M | 0.2 / 0.2 / 1.1 / 0.9%; premiums 4.2 / 5.9 / 29.6 / 12.2% |
+
+Multiway +722.3, paired **+104 ±185** (t=1.3), better 2/8; heads-up
++484.8, paired **+119 ±108** (t=2.6), better 2/8; benchmark 76.4 /
+72.0. Per seed multiway +699 +741 +647 +755 +582 +637 +771 +946,
+heads-up +339 +616 +485 +458 +404 +672 +255 +648. BB node gain 0.151
+(it-800m 0.28), cold-call 4.73 (3.13); mixing is erratic between
+neighbouring premiums (facing the open QQ jams 36%, AKo 0%).
+
+VERDICT F: the jam symptom is gone but heads-up is significantly worse
+and multiway not better; rejected, like every deep floor before it.
+
+G (`G.bin` `31a4cf5c…`, 800M in 5681s, 168M infosets; F's floor
+prunes so much it trains 3× faster):
+
+| Snapshot | all-in share of combos over the four spots; premium jam share |
+|----------|----------------------------------------------------------------|
+| 200M | 6.6 / 5.6 / 4.5 / 5.6%; premiums 56.5 / 54.1 / 35.2 / 38.2% |
+| 400M | 5.5 / 4.1 / 3.4 / 4.8%; premiums 60.0 / 55.0 / 31.7 / 37.2% |
+| 800M | 4.8 / 3.0 / 2.7 / 3.8% (37–44% of it residue); premiums 59.3 / 50.5 / 38.2 / 42.1% |
+
+Node gains at 800M: cold-call 3.25, BTN-vs-jam 0.85, BB 0.28 (it-800m
+3.13 / 0.84 / 0.28); the 200M snapshot's lower cold-call gain (4.26 vs
+5.10) did not carry to 800M. The cold-caller of 'r3 f f a f' calls 13.4%
+of combos (AA–JJ, AK, some TT/KQs/AJs).
+
+Multiway +611.1, paired **−7 ±110** (t=−0.1), better 4/8; heads-up
++302.8, paired **−63 ±71** (t=−2.1), better 5/8; benchmark 77.4 / 73.7
+(it-800m 77.4 / 73.9). Per seed multiway +542 +661 +624 +530 +720 +388
++676 +749, heads-up +256 +193 +344 +271 +161 +451 +352 +394.
+
+VERDICT G: the first full-training arm not worse on either gate, with a
+heads-up improvement just short of the t>2.4 bar, but it neither lowers
+the multiway bound nor changes the symptoms: with the vanishing floor the
+current strategies still jam premiums (and the jam is the best response
+to them, see the action-EV table above), so averaging by own reach
+faithfully averages the same jams. Not adopted on its own; it costs
+nothing and is the right averaging, so a later arm can carry it.
+
+Summary of the section. Every change that removes the jam symptom (a deep
+floor anywhere, a re-solved preflop) leaves the multiway bound no better
+and usually worsens heads-up; the changes that keep the bounds (moderate
+floor C, the sweep G) keep the jams. Within the Pluribus menu at 100BB
+against these opponents, jamming premiums over a 2.9bb open is roughly
+break-even with re-raising and slightly the best response, and calling
+the jam wide is correct while ~40% of the jam range is residue. Removing
+the residue (M2) tightens callers to AA–JJ/AK/AQs/AJs for players, at no
+measured exploitability gain. Rented spend for F and G and the M1/M2
+gates: about $9.7 (m8g.24xlarge spot 4h20m).
+
+## 2026-10-28 — The 80–120bb band at 800M: 80bb costs −110, 120bb nothing
+
+GOAL item 5. Native blueprints trained exactly like it-800m but at other
+depths (`train --iters 800000000 --stack 8000|12000 --bucket-table
+buckets.bin`, 48 threads each, concurrently on one rented m8g.24xlarge:
+80bb 5828s, 148M infosets; 120bb 6414s, 192M infosets), compacted
+(`s8000.nrc` `6a6b4ed6…` 907 MB, kept as `runs/it-800m-80bb.nrc`;
+`s12000.nrc` `09fd8cb2…` 1.18 GB, not kept; training files `s8000.bin`
+`ccf6cd67…`, `s12000.bin` `1df59ae2…`). `depth-match --hands 400000`,
+seeds 1–8 (80/120bb) and 1–4 (90/110bb); one run takes about a second.
+
+| Table depth | Hero A, played through the mirror | Field | A − field's own blueprint (mean ±95% over seeds) |
+|------------:|-----------------------------------|-------|----------------------------------------------:|
+| 80bb | it-800m (100bb) | 80bb native | **−110 ±15** (−131 −113 −79 −127 −97 −118 −86 −129) |
+| 90bb | it-800m (100bb) | 80bb, mirrored | −25 ±16 |
+| 90bb | 80bb native, mirrored | it-800m | +36 ±26 |
+| 110bb | it-800m (100bb) | 120bb, mirrored | +50 ±60 |
+| 110bb | 120bb native, mirrored | it-800m | −8 ±29 |
+| 120bb | it-800m (100bb) | 120bb native | +20 ±30 (−22 +37 +63 +79 −9 +43 −53 +14) |
+
+The 20M figure (−595 at 80bb) was mostly under-training: at 800M the
+80bb cost is a fifth of it, but real (8/8 seeds). Above 100bb there is
+none: a 100bb stack plays 120bb as well as a native 120bb blueprint. At
+90bb the 80bb blueprint is the better of the two whichever field it
+faces. The 80bb blueprint jams premiums over a 2.9bb open as often as
+it-800m (33–52%), so depth is not behind the jam symptom.
+
+ADOPTED: `serve --also PATH:STACK` holds several blueprints and answers
+each request from the one nearest the acting seat's effective stack (its
+stack capped by the deepest opponent's), ties to the shallower, so 90bb
+plays the 80bb blueprint. Serving it-800m + the 80bb blueprint is 1.96 GB
+of the 5 GB budget. The band cost is then zero at 80 and 100bb by
+construction and within noise of zero at 110 and 120bb; at 90bb the
+served blueprint is the better of the two, but its cost against a native
+90bb field is not measured.
+
+## 2026-10-28 — Online search on it-800m: multiway −343 ±42 (8/8)
+
+GOAL item 6, first half: what search gains on the standing blueprint.
+`lbr --multiway --hands 20000 --search --search-iters 20000 --search-ms
+1000000` seeds 1–8 on it-800m.bin (`44d8fd60…`), rented m8g.24xlarge, the
+time cap set out of reach so the iteration caps bind (multiway MCCFR
+resolves 20k iterations; the exact two-player turn and river solvers
+their own 200 and 10,000). Paired against it-800m's recorded per-seed
+bounds; the same binary reproduced them (seeds 4–7 blueprint arms +573
++862 +460 +585). As in A3, the probe's range model of the bot stays the
+blueprint, so these are probe results, not strict bounds.
+
+| Seed | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | mean |
+|------|--:|--:|--:|--:|--:|--:|--:|--:|-----:|
+| blueprint | +468 | +610 | +829 | +573 | +862 | +460 | +585 | +558 | +618.1 |
+| search | +184 | +332 | +450 | +188 | +459 | +168 | +231 | +186 | +274.8 |
+
+Paired search − blueprint **−343 ±42** (t=19), better 8/8: 56% of the
+multiway bound, against 17% for search on the 200M blueprint in A3. Each
+seed took 9,400s on 6 cores. A first attempt with all 40 probes at once
+ran out of memory (each searching process holds 18 GB) and its survivors
+hit the default 2s cap under 1,500 runnable threads; even that starved
+search (5k iterations, seeds 3, 6, 7) beat the blueprint by 270–400.
+
+Latency, `lbr --search` locally (Ryzen 5 7600, 12 threads, 40 hands, no
+time cap; per-decision wall time, now printed by `lbr`/`br`):
+
+| Street | decisions | mean ms | p50 | p99 |
+|--------|----------:|--------:|----:|----:|
+| flop (multiway MCCFR; two-player flops play the blueprint) | 29 | 89 | 0.1 | 930 |
+| turn (exact two-player turn+river) | 12 | 1,568 | 1,590 | 2,018 |
+| river (exact two-player CFR+, 10k iterations) | 8 | 4,424 | 3,921 | 7,623 |
+
+With 2 threads instead of 12 the per-decision times are the same: each
+solve runs on one thread. Uncapped search is therefore 35× over the
+200 ms p99 target, almost all of it in the two-player turn and river
+solvers, which stop at `--search-ms`.
+
+### Search under a per-decision time cap: 150ms and 75ms both pass
+
+Same 8 seeds and probes, `--search-iters 20000 --search-ms 150|75`,
+each probe on 12 threads with 8 at a time on the 96 cores, so the cap is
+wall time on an uncontended core. Pairs against it-800m's per-seed
+bounds (multiway +618.1, heads-up +365.2 means).
+
+| Cap | multiway per seed | multiway paired | heads-up per seed | heads-up paired | p99 ms (multiway / heads-up probe) |
+|----:|-------------------|----------------:|-------------------|----------------:|-----------------------------------:|
+| none | +184 +332 +450 +188 +459 +168 +231 +186 | **−343 ±42** (t=19), 8/8 | – | – | ~208,000 (contended) |
+| 150 | +327 +441 +511 +313 +497 +221 +360 +241 | **−254 ±64** (t=9.3), 8/8 | −378 −330 −132 −379 −424 −204 −212 −98 | −635 ±66, 8/8 | 257 / 162 |
+| 75 | +349 +473 +499 +324 +543 +310 +332 +254 | **−232 ±72** (t=7.7), 8/8 | −322 −220 −23 −279 −347 −80 −154 +29 | −540 ±65, 8/8 | 206 / 86 |
+
+The heads-up column has the A3 caveat: `br` best-responds to the
+blueprint, not to the searching bot, so "not worse" is all it shows.
+
+The multiway p99 above the cap had two causes. (1) `run_subgame` checked
+the clock between batches of 1,024 traversals, and a batch of
+depth-limited flop traversals on one thread can take seconds; it now
+checks a deadline before every traversal (this change). (2) Inside the
+probes a decision's thread steals other hands' work while it waits in the
+parallel resolve. Locally (Ryzen 5 7600), 3,000 multiway hands at 75ms
+after the fix: on 12 threads p99 89 ms with a 0.1% tail up to 5 s, all
+3-way flops; on 1 thread p99 83 ms, max 86 ms (flop 75.5, turn 86, river
+76), so the tail is the probe harness, not search. The capped gate rows
+above predate the fix and include its overshoot.
+
+Memory: a probe holding `it-800m.bin` peaks at 22.5 GB resident with or
+without search. Search itself is cheap; the training-format blueprint's
+hash map is 4× its file.
+
+VERDICT: search at a 75ms cap keeps two thirds of the uncapped multiway
+gain (−232 of −343) and passes the multiway gate (t=7.7, 8/8) with
+heads-up not worse. It meets p99 ≤ 200 ms on one core (83 ms locally;
+Graviton per-core speed changes the iterations a cap buys, not the
+latency). Not yet servable: `serve` answers from the compact blueprint
+and has no search path, and search loads the training format (22.5 GB),
+which a t4g.micro (1 GB) cannot hold. Search does not change preflop
+(blueprint), so the jam symptom is untouched, as GOAL item 4 predicted.
+Spend for this section and the band runs: about $12 (two m8g.24xlarge
+spot instances, 2.0 h and 3.3 h).
+
+### The re-solved preflop with search: M2 + search passes, and fixes the jams
+
+M2 (it-800m's postflop under the `refine-preflop` own-reach-sweep preflop,
+above; rebuilt locally as `runs/m2.bin` with `merge-preflop`, same preflop
+probe numbers as before) with search at the 75ms cap, locally on the Ryzen
+5 7600: `RAYON_NUM_THREADS=12`, one probe at a time, `--search-iters 20000
+--search-ms 75`, seeds 1–8, 20k hands. it-800m with the same search on the
+same machine is the local control (a cap buys a machine-dependent number of
+iterations).
+
+| Arm | multiway per seed | mean |
+|-----|-------------------|-----:|
+| it-800m blueprint (recorded) | +468 +610 +829 +573 +862 +460 +585 +558 | +618.1 |
+| M2 blueprint (recorded) | +713 +913 +671 +602 +789 +617 +603 +781 | +711.1 |
+| it-800m + search | +363 +450 +557 +403 +526 +255 +346 +260 | +395.0 |
+| M2 + search | +424 +679 +476 +344 +565 +386 +400 +535 | +476.0 |
+
+| Paired (multiway) | |
+|---|---:|
+| it-800m + search − it-800m | −223 ±65 (t=8.2), 8/8 (rented, 75ms: −232 ±72) |
+| **M2 + search − it-800m** | **−142 ±123 (t=2.7), better 7/8** |
+| M2 + search − it-800m + search | +81 ±105 (t=1.8), better 2/8 |
+| M2 + search − M2 | −235 ±25 (t=22), 8/8 |
+
+Heads-up, M2 + search: −194 −88 −172 −361 −258 +162 −225 −100, paired
+against it-800m −520 ±88, not worse 8/8 (the `br` caveat as above). M2
+reaches fewer postflop decisions (18.9k searched per seed vs 30k): its
+tighter preflop folds more hands before the flop.
+
+VERDICT: M2 + search passes the multiway gate against today's blueprint
+(t=2.7 > 2.4) with heads-up not worse, and its preflop is the one players
+asked for (premiums jam 1.8–9.4% facing a 2.9bb open instead of 33–48%;
+some bot jams over a UTG open about 3% of the time instead of 11%; the
+cold-caller of a jam holds AA–JJ, AK, AQs, AJs). It gives back 81 of
+it-800m + search's 223 (not significant) and 0.8 points of Pluribus
+preflop agreement (76.6% vs 77.4%). Of the arms in this file it is the
+only one that both passes the gates and removes the symptom.
+
+### `serve --search`, and the re-solved preflop at 80bb
+
+`serve --search` (this change) answers postflop requests from
+`Policy::search_dist`: the mirror logs every shadow action of the replayed
+request, a `RangeTracker` observes them through the blueprint, and the
+resolve is rooted at the current decision with no turn carry (requests
+are stateless). End to end on the Ryzen 5 7600 with `--blueprint m2.bin
+--search --search-ms 75 --bucket-table buckets.bin --also
+it-800m-80bb.nrc+r80-sw.bin:8000` (61s to ready): 3-way flop 45 ms cold,
+16 ms warm; two-player turn 78–85 ms; river 76 ms; preflop and the 80bb
+compact blueprint under 2 ms.
+
+The 80bb blueprint got the same preflop re-solve (`refine-preflop
+--blueprint it-800m-80bb.nrc --stack 8000 --iters 1000000000
+--sweep-every 5000000`, `runs/ref/r80-sw.bin`, 29.6M preflop strategies):
+premium jams facing a 2.9bb open fall from 33–52% to 3.1–28.1% ('f f f
+r3' keeps 28%). Rarely reached jam-facing nodes come out under-trained and
+non-monotone in hand strength, here and in M2: at 80bb the big blind facing
+a UTG open and a button jam folds KK 96%, QQ and TT 100% (the base calls
+them); at 100bb M2 calls JJ 0.2% behind a UTG open and a cutoff jam, and
+QQ 12% facing a cutoff jam. Neither makes light jams profitable: against
+M2 a cutoff jam (`action-ev --line "f f f"`) loses 3.9–5.7bb with 72o, 94o,
+J4o (base 6.3–9.6) and 0.5–2.0bb with K8o, A5o, T9s, 55, A9o, KJs; at 80bb
+a button jam over the open loses 4.6–19.8bb (1.7–19.8 against the mix)
+with everything tested below QQ, and QQ's jam beats its mix by +0.97bb
+(base +0.25), the premium-jam pull itself. They read as oddities to a
+player, not as a jam exploit; a
+re-solve that also samples the jam lines more often would clean them up.
+
+### Search from compact blueprints: the served configuration passes
+
+Search now reads strategies through `mirror::Strategies` (now returning
+`Cow<[f32]>`, borrowed for training blueprints) instead of the training
+map: `Policy::from_strategies` wraps a compact blueprint or a
+`BASE+PREFLOP` overlay (either part compact), and leaf rollouts, range
+tracking and the probes' bot model all look up through it. The re-solved
+preflops are compacted too (`r800-sw.nrc` 239 MB, `r80-sw.nrc` 220 MB;
+probe numbers unchanged: premiums 1.7–9.4%).
+
+Served set: `serve --blueprint it-800m.nrc+r800-sw.nrc --search
+--bucket-table buckets.bin --also it-800m-80bb.nrc+r80-sw.nrc:8000`, 2.43 GB
+on disk (budget 5 GB), ready in 2s, peak 1.8 GB resident, the same
+latencies as above (searched answers 25–87 ms).
+
+Gates for exactly that 100bb configuration, local protocol as above
+(`lbr`/`br --blueprint it-800m.nrc+r800-sw.nrc --search --search-iters
+20000 --search-ms 75`, 12 threads, seeds 1–8, 20k hands):
+
+| Probe | per seed | mean | paired vs it-800m blueprint |
+|-------|----------|-----:|----------------------------:|
+| multiway | +424 +523 +191 +421 +529 +308 +437 +403 | +404.4 | **−214 ±159 (t=3.2), better 8/8** |
+| heads-up | −148 −73 −168 −218 −237 +161 −197 +31 | −106.0 | −471 ±89, not worse 8/8 |
+
+Against the training-format M2 + search −72 ±98 (t=1.7) and against
+it-800m + search +9 ±132: compact lookups cost nothing measurable.
+
+VERDICT: ADOPTABLE. The served configuration passes the multiway gate
+(t=3.2 > 2.4, 8/8) with heads-up not worse, removes the jam symptom
+(premiums 1.7–9.4% facing a 2.9bb open, from 33–48%), plays 80–120bb
+within noise of native blueprints, fits the 5 GB serving budget, and
+answers searched decisions in under 90 ms p99 on one core. Open: it needs
+about 2 GB of RAM (a t4g.small, not the 1 GB micro); Pluribus preflop
+agreement drops 0.8 points (76.6% vs 77.4%); rarely reached jam-facing
+preflop nodes mix oddly (above); the 80bb configuration's gates were not
+run separately.
+
+### The served configuration measured through `serve`: the calls were still wrong
+
+Benchmark (Pluribus's 10k hands, blueprint only, so search does not
+enter): it-800m.nrc preflop 77.5% / total 73.8%; served
+`it-800m.nrc+r800-sw.nrc` 76.6% / 73.3%.
+
+The user's own scenario, asked of `serve` (scratchpad `shove_test.py`):
+UTG raises to 300 (a 3bb open, not the menu's 2.9bb), and either (A) folds
+to the bot, or (B) MP jams 100bb and folds to the bot. Every hand class
+once, weighted by its combos:
+
+| | it-800m | served, blueprint answers | served with `--search` (preflop jam resolve) |
+|---|---|---|---|
+| A: jam share, premiums (MP / CO / BTN / SB / BB) | 19.9 / 26.9 / 30.7 / 33.5 / 44.4% | 10.5 / 14.0 / 13.3 / 13.0 / 1.7% | same (no jam to face) |
+| A: jam share, all hands | 1.8–2.7% | 0.2–1.0% | same |
+| B: call share facing open + jam (CO / BTN / SB / BB) | 14.9 / 16.4 / 16.0 / 15.2% | 15.6 / 12.4 / 12.0 / 13.2% | **5.2 / 5.4 / 5.4 / 5.5%** |
+| B: classes calling ≥50% | AA KK QQ JJ, AK, …, K2s 74s 32s T3s Q2s 96s | AA KK, …, 93s 95o T8o Q2o 84s K3s | **AA–99 (BTN, SB: –88), AKs AKo AQs AQo** |
+
+So the premium-jam share through `serve` at a 3bb open is 10–14% (the
+probe's 2.9bb lines gave 1.7–9.4%), and the re-solved preflop did nothing
+for the calls: facing an open and a jam the callers' blueprint strategy is
+noise in both blueprints, because that node is almost never reached in
+training (the earlier cold-call probe looked at the common BTN-jam line).
+
+Fix (this change): facing a preflop all-in that a call would close (some
+opponent all-in, every other live opponent all-in or still owing chips,
+assumed to fold), search computes call − fold by Monte Carlo (≥200, up
+to 4,000 deals within the cap) over the all-in players' near-hard Bayes
+ranges and the board, and mixes by the estimate's z-score
+(`Policy::preflop_allin_dist`). The range tracker now keeps those
+near-hard weights (floor 0.001, no widening) beside its robust ones
+(floor 0.02): at a 0.8% jam frequency the 0.02 floor alone would leave a
+jammer's range mostly junk. Column 3 above is the result. Unit test:
+facing a jam with a uniform jammer range, AA calls and 72o folds.
+
+Bug found on the way: `RangeTracker::observe` multiplied by the stored
+strategy weight without normalizing. Training blueprints store
+probabilities, compact ones store bytes (0–255), so with a compact
+blueprint the floor vanished and an unseen infoset (weight 1.0) counted
+as almost impossible. It now normalizes. The compact gate rows in the
+previous section ran before this fix.
+
+### Final gates of the served configuration, both depths (after the fixes)
+
+Local, 8 seeds × 20k hands, search 75ms/20k iters, compact blueprints with
+the preflop jam resolve and the normalized tracker. 100bb is paired
+against it-800m's recorded per-seed numbers; 80bb is paired against the
+native 80bb blueprint (`it-800m-80bb.nrc`, no search), run in the same
+battery with the new `lbr`/`br --stack 8000`:
+
+| Gate | Served | Control | Paired | Lower |
+|---|---|---|---|---|
+| 100bb multiway LBR | +350 | +618 (it-800m) | **−268 ±120 (t=−4.4)** | 8/8 |
+| 100bb heads-up BR | +268 | +365 | −98 ±96 (t=−2.0) | 7/8 |
+| 80bb multiway LBR | +284 | +531 (it-800m-80bb) | **−247 ±119 (t=−4.1)** | 7/8 |
+| 80bb heads-up BR | +137 | +194 | −57 ±69 (t=−1.6) | 5/8 |
+
+Per seed, 100bb multiway: +263 +396 +144 +336 +647 +186 +427 +399; heads-up
++207 +297 +168 +61 +89 +630 +308 +381. 80bb multiway: +381 +256 +71 +328
++420 +469 +52 +294 (control +575 +595 +509 +427 +696 +420 +515 +511);
+heads-up +106 +218 +105 +234 −41 +225 +108 +144 (control +165 +248 +342
++187 −89 +309 +98 +293).
+
+Both depths pass: multiway clearly lower, heads-up not worse (lower at
+both, not significantly).
+
+Latency: inside the probes a few multiway flop decisions logged maxima of
+0.4–34s, because the probes play their hands in a rayon pool and a search
+waiting on its own batch steals whole hands. Measured through `serve`
+instead (scratchpad `selfplay_latency.py`: every seat is the bot, every
+request is timed; 9,353 requests over 1,100 hands at 100bb and 80bb, one
+run forcing preflop calls to reach 253 multiway flops), on the 12-core
+dev box: p99 83ms, max 85ms; postflop heads-up turn p99 85ms, river 78ms,
+multiway flop p99 52ms. The shove test through the final binary is
+unchanged from the table above (calls facing open + jam 5.2–5.5%).
+
+Benchmark (blueprint preflop): 76.6% against it-800m's 77.5%, −0.9
+points; the re-solved preflop is the reason (the same drop showed in
+the refine arms) and it is the trade made for the jam fix.
+
+Verdict: adopted, i.e. `serve --blueprint it-800m.nrc+r800-sw.nrc --search
+--bucket-table buckets.bin --also it-800m-80bb.nrc+r80-sw.nrc:8000`;
+2.43 GB compact on disk for all four files, peak RSS ≈1.8 GB with both
+depths loaded.

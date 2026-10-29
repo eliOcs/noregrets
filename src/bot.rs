@@ -11,7 +11,8 @@
 
 use crate::abstraction::{AbsAction, AbsConfig, Abstraction};
 use crate::cfr::{sample_index, Blueprint, LeafCfg, Spine, TrainConfig, Trainer};
-use crate::engine::{Hand, Street};
+use crate::engine::{Hand, PlayerAction, Street};
+use crate::mirror::Strategies;
 use crate::search::RangeTracker;
 use crate::table::RoundRoot;
 use crate::valuenet::ValueNet;
@@ -58,6 +59,41 @@ pub fn fallback_report() -> Option<String> {
 }
 static MENU_MISMATCH_WARNED: AtomicBool = AtomicBool::new(false);
 
+/// Street and wall time (microseconds) of every searched (postflop)
+/// decision since process start. Under a parallel probe a decision's thread
+/// can steal another hand's work while it waits inside the multiway
+/// resolve, so for latency run the probe with RAYON_NUM_THREADS=1.
+static SEARCH_MICROS: std::sync::Mutex<Vec<(u8, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Searched-decision latency summary, or None if nothing was searched.
+pub fn search_timing_report() -> Option<String> {
+    let all = SEARCH_MICROS.lock().unwrap().clone();
+    if all.is_empty() {
+        return None;
+    }
+    let summary = |mut v: Vec<u64>| {
+        v.sort_unstable();
+        let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize] as f64 / 1000.0;
+        let mean = v.iter().sum::<u64>() as f64 / v.len() as f64 / 1000.0;
+        format!(
+            "{}, ms mean {mean:.1}, p50 {:.1}, p90 {:.1}, p99 {:.1}, max {:.1}",
+            v.len(),
+            q(0.5),
+            q(0.9),
+            q(0.99),
+            q(1.0)
+        )
+    };
+    let mut out = format!("searched decisions: {}", summary(all.iter().map(|x| x.1).collect()));
+    for (street, name) in [(1, "flop"), (2, "turn"), (3, "river")] {
+        let v: Vec<u64> = all.iter().filter(|x| x.0 == street).map(|x| x.1).collect();
+        if !v.is_empty() {
+            out += &format!("\n  {name}: {}", summary(v));
+        }
+    }
+    Some(out)
+}
+
 /// How many stale-menu blueprint lookups have been seen this process.
 pub fn menu_mismatch_count() -> u64 {
     MENU_MISMATCHES.load(Ordering::Relaxed)
@@ -88,7 +124,13 @@ const TURN_MENU: [u8; 1] = [3];
 const FLOP_QUERY_TURNS: usize = 16;
 
 pub struct Policy {
+    /// The training blueprint, or for `from_strategies` an empty one that
+    /// carries only the player count and abstraction config. Strategy
+    /// lookups go through `strategies`.
     pub blueprint: Arc<Blueprint>,
+    /// Every strategy lookup: the training blueprint itself (shared), or a
+    /// compact blueprint or overlay.
+    pub strategies: Arc<dyn Strategies>,
     pub abs: Arc<Abstraction>,
     /// Belief-state value net: enables ReBeL-style flop solving.
     pub value_net: Option<Arc<ValueNet>>,
@@ -132,6 +174,19 @@ impl Default for SearchParams {
     }
 }
 
+/// A preflop decision facing an all-in where a call ends the betting: some
+/// opponent is all-in, and every other live opponent is either all-in or
+/// still owes chips (has yet to respond, and is assumed to fold).
+pub fn preflop_allin_spot(real: &Hand) -> bool {
+    let hero = real.to_act();
+    let bet = real.current_bet();
+    let live = |q: usize| q != hero && !real.folded(q);
+    real.street() == Street::Preflop
+        && real.to_call() > 0
+        && (0..real.num_players()).any(|q| live(q) && real.all_in(q))
+        && (0..real.num_players()).all(|q| !live(q) || real.all_in(q) || real.street_commit(q) < bet)
+}
+
 /// Early-exit purity threshold for adaptive search.
 const ADAPTIVE_PURITY: f64 = 0.97;
 
@@ -172,8 +227,30 @@ impl SearchSession {
 
 impl Policy {
     pub fn new(blueprint: Blueprint, abs: Arc<Abstraction>) -> Self {
+        let blueprint = Arc::new(blueprint);
         Policy {
-            blueprint: Arc::new(blueprint),
+            strategies: blueprint.clone(),
+            blueprint,
+            abs,
+            value_net: None,
+            search_abs: None,
+        }
+    }
+
+    /// A policy over any strategy store (compact blueprint, preflop
+    /// overlay). Commands that need the training blueprint's map (distill,
+    /// strategic clustering) cannot use it.
+    pub fn from_strategies(strategies: Arc<dyn Strategies>, num_players: usize, abs: Arc<Abstraction>) -> Self {
+        let blueprint = Arc::new(Blueprint {
+            strategies: Default::default(),
+            iterations: 0,
+            num_players,
+            abs_cfg: abs.cfg.clone(),
+            centroids: None,
+        });
+        Policy {
+            blueprint,
+            strategies,
             abs,
             value_net: None,
             search_abs: None,
@@ -204,6 +281,7 @@ impl Policy {
     pub fn clone_without_net(&self) -> Policy {
         Policy {
             blueprint: self.blueprint.clone(),
+            strategies: self.strategies.clone(),
             abs: self.abs.clone(),
             value_net: None,
             search_abs: self.search_abs.clone(),
@@ -219,7 +297,7 @@ impl Policy {
         let bucket = self.abs.bucket(h.hole(p), h.board(), rng);
         let street = h.street() as usize;
         LOOKUPS[street].fetch_add(1, Ordering::Relaxed);
-        if let Some(s) = self.blueprint.get(bucket, hist) {
+        if let Some(s) = self.strategies.get(bucket, hist) {
             if s.len() == acts.len() {
                 let probs: Vec<f64> = s.iter().map(|&x| x as f64).collect();
                 let total: f64 = probs.iter().sum();
@@ -276,9 +354,80 @@ impl Policy {
         round: Option<&RoundRoot>,
         rng: &mut SmallRng,
     ) -> AbsAction {
+        let started = std::time::Instant::now();
         let (acts, probs) =
             self.search_dist(real, shadow, hist, params, train_cfg, tracker, session, round, rng);
+        if real.street() != Street::Preflop {
+            let street = real.street() as u8;
+            SEARCH_MICROS.lock().unwrap().push((street, started.elapsed().as_micros() as u64));
+        }
         acts[sample_index(&probs, rng)]
+    }
+
+    /// Preflop, facing an all-in with nothing left to decide after a call
+    /// (see `preflop_allin_spot`): call vs fold by Monte Carlo over the
+    /// all-in players' near-hard Bayes ranges and the board, players yet
+    /// to respond assumed to fold. The blueprint's own strategy at these
+    /// rarely reached nodes is barely trained (it called 12–16% of hands,
+    /// 93s and Q2o among them, facing a jam over an open). Mixed by the
+    /// z-score of the estimate; None when the spot does not qualify.
+    pub fn preflop_allin_dist(
+        &self,
+        real: &Hand,
+        shadow: &Hand,
+        tracker: &RangeTracker,
+        params: SearchParams,
+        rng: &mut SmallRng,
+    ) -> Option<(Vec<AbsAction>, Vec<f64>)> {
+        if !preflop_allin_spot(real) {
+            return None;
+        }
+        let acts = self.abs.abstract_actions(shadow);
+        let fold = acts.iter().position(|&a| a == AbsAction::Fold)?;
+        let call = acts.iter().position(|&a| a == AbsAction::CheckCall)?;
+        let hero = real.to_act();
+        let hole = real.hole(hero);
+        let jammers: Vec<usize> = (0..real.num_players())
+            .filter(|&q| q != hero && !real.folded(q) && real.all_in(q))
+            .collect();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(params.time_ms.max(1));
+        let (mut n, mut sum, mut sq) = (0u32, 0.0f64, 0.0f64);
+        while n < 4000 && (n < 200 || std::time::Instant::now() < deadline) {
+            let mut used = [false; 52];
+            used[hole[0] as usize] = true;
+            used[hole[1] as usize] = true;
+            let mut want = [None; crate::engine::MAX_PLAYERS];
+            want[hero] = Some(hole);
+            for &q in &jammers {
+                want[q] = Some(tracker.sample_hard(q, &mut used, rng)?);
+            }
+            let mut h = real.clone();
+            h.resample_hidden_with(&want, rng);
+            let value = |first: PlayerAction| {
+                let mut g = h.clone();
+                g.apply(first);
+                while !g.is_terminal() {
+                    let a = if g.can_check() || g.to_act() == hero {
+                        PlayerAction::CheckCall
+                    } else {
+                        PlayerAction::Fold
+                    };
+                    g.apply(a);
+                }
+                g.utilities()[hero] as f64
+            };
+            let d = value(PlayerAction::CheckCall) - value(PlayerAction::Fold);
+            n += 1;
+            sum += d;
+            sq += d * d;
+        }
+        let mean = sum / n as f64;
+        let se = ((sq / n as f64 - mean * mean).max(0.0) / n as f64).sqrt().max(1e-9);
+        let p_call = 1.0 / (1.0 + (-1.7 * mean / se).exp());
+        let mut probs = vec![0.0; acts.len()];
+        probs[fold] = 1.0 - p_call;
+        probs[call] = p_call;
+        Some((acts, probs))
     }
 
     /// The full action distribution the search would act from — the routing
@@ -299,6 +448,11 @@ impl Policy {
         rng: &mut SmallRng,
     ) -> (Vec<AbsAction>, Vec<f64>) {
         if real.street() == Street::Preflop {
+            if let Some(tr) = tracker {
+                if let Some(d) = self.preflop_allin_dist(real, shadow, tr, params, rng) {
+                    return d;
+                }
+            }
             return self.blueprint_dist(shadow, hist, rng);
         }
         // River spots with two live players: exact range-vs-range CFR+
@@ -338,7 +492,7 @@ impl Policy {
             return self.blueprint_dist(shadow, hist, rng);
         }
         let leaf = (real.street() == Street::Flop).then(|| LeafCfg {
-            blueprint: self.blueprint.clone(),
+            strategies: self.strategies.clone(),
             abs: self.abs.clone(),
             limit: Street::Flop,
         });
@@ -1463,7 +1617,7 @@ mod tests {
             },
             Some(&tracker),
             Some(LeafCfg {
-                blueprint: bp.clone(),
+                strategies: bp.clone(),
                 abs: abs.clone(),
                 limit: Street::Flop,
             }),

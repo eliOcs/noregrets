@@ -78,7 +78,7 @@ impl Lbr<'_> {
     fn action_prob(&self, ci: usize, board: &[Card], hist: &[u8], acts: &[AbsAction], idx: usize) -> f64 {
         let mut rng = SmallRng::seed_from_u64(0x1B12_5EED ^ ci as u64);
         let bucket = self.policy.abs.bucket(self.combos[ci], board, &mut rng);
-        if let Some(s) = self.policy.blueprint.get(bucket, hist) {
+        if let Some(s) = self.policy.strategies.get(bucket, hist) {
             if s.len() == acts.len() {
                 let total: f64 = s.iter().map(|&x| x as f64).sum();
                 if total > 0.0 {
@@ -627,7 +627,7 @@ pub fn run_lbr_multiway(
                     a
                 };
                 if let Some(tr) = tracker.as_mut() {
-                    tr.observe(p, a, &table.shadow, &table.hist, &policy.blueprint, &policy.abs);
+                    tr.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
                 }
                 table.apply_abs(a, &policy.abs);
                 if table.real.street() != street_before {

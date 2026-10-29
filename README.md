@@ -124,6 +124,12 @@ training exactly.
 | `--per-action-prune` | off | Legacy pruning: decided per action, applied everywhere. The default is Pluribus's rules (decided once per traversal, never on the river, never for actions leading straight to a terminal node), which halved the BR exploitability bound at equal iterations |
 | `--snapshot-avg` | off | Postflop blueprint = mean of periodic snapshots of the current strategy (after a 10% warm-up, every 5%) instead of the linear running average; preflop keeps the average |
 | `--vr-baseline` | off | VR-MCCFR learned control-variate baselines at sampled opponent nodes; unbiased variance reduction per visit |
+| `--preflop-sweep-every N` | 0 (off) | Preflop average strategy from an exact own-reach sweep every N iterations (Pluribus's `UPDATE-STRATEGY`, enumerated) instead of accumulating at sampled visits, whose probability also carries the other players' reach |
+| `--floor-per-weight C` | – | Regret floor −C·t (t = linear weight) instead of the absolute 2·`--prune-threshold`, which a long run makes less than a chip of one update deep |
+| `--floor-preflop-only` | off | Apply `--floor-per-weight` to preflop infosets only |
+| `--prune-per-weight C` | – | Pruning threshold −C·t instead of the absolute `--prune-threshold` |
+| `--preflop-explore e` | 0 | Sample other players' preflop actions from (1−e)·strategy + e·uniform, importance-weighted |
+| `--save-at N,M,...` | – | Also save the blueprint at these iteration counts as `<out>.<N>` |
 | `--threads` | all cores | Worker threads |
 
 ### `bucket-table`
@@ -294,6 +300,83 @@ it actually plays rather than the raw blueprint. The LBR's own range
 model of the bot stays the blueprint (it cannot see the resolved
 strategy), so with `--search` the number is a probe result, not a strict
 lower bound. Multiway only.
+
+### `preflop-probe` / `action-ev`
+Diagnostics at one preflop node, on a training or compact blueprint. The
+node is a line of abstract actions from the start of the hand with the
+button in seat 0 (UTG acts first): `f`, `c`, `rN` (raise `BET_SIZES[N]` of
+the pot; `r3` is the 2.9bb open), `a`. `"f f f r3 f"` is the big blind
+facing a button open; `"r3 f f a f"` the big blind facing a UTG open and a
+button all-in.
+
+```bash
+# Strategy per hand class, all-in share overall and for KK QQ JJ TT AKs AKo,
+# and how much of the all-in range is residue (classes jamming under 5%)
+pluribus preflop-probe --blueprint it-800m.nrc --line "f f f r3 f" [--all]
+
+# Value of every action for a hand class when everyone, the hero included,
+# plays the blueprint afterwards, against the blueprint's own ranges
+pluribus action-ev --blueprint it-800m.nrc --bucket-table buckets.bin \
+  --line "f f f r3 f" --hands KK,AKo --deals 2000000
+
+# Node summary: what a best response at this node alone gains over the
+# blueprint's mix, per reaching hand (0 = no profitable deviation)
+pluribus action-ev --blueprint it-800m.nrc --line "r3 f f a f" --hands all --deals 40000
+```
+
+### `refine-preflop` / `merge-preflop`
+Re-solve preflop with the base blueprint's postflop play frozen for every
+player; each traversal plays postflop out from the base. Writes a
+preflop-only blueprint, served over the base as `--blueprint BASE+PREFLOP`
+(any command that loads a serving bot) or merged into a training
+blueprint with `merge-preflop --base B.bin --preflop P.bin --out M.bin`.
+Measured worse multiway than its base (BASELINES, 28 Oct 2026): the base's
+postflop was trained against the old preflop ranges.
+
+### `serve` / `depth-match`
+`serve` answers one JSON request per stdin line (the hand so far in, the
+blueprint's mixed strategy as concrete actions out; see `src/serve.rs`).
+Other depths are played through a mirror at the training depth. With
+`--also PATH:STACK` (repeatable) it holds blueprints trained at several
+depths and answers each request from the one nearest the acting seat's
+effective stack, ties to the shallower:
+
+```bash
+pluribus serve --blueprint it-800m.nrc --also it-800m-80bb.nrc:8000
+# What playing A off-depth costs against a field trained at the table's depth
+pluribus depth-match --a it-800m.nrc --b it-800m-80bb.nrc --b-stack 8000 --stack 8000 --hands 400000
+```
+
+At 800M, playing the 100bb blueprint at 80bb costs about −110 mbb/hand
+and at 120bb nothing measurable (BASELINES, 28 Oct 2026).
+
+`--search` re-solves postflop decisions online (`--search-ms`, default 75;
+`--search-iters`, default 20,000; `--bucket-table` prefills the card
+abstraction). Ranges are rebuilt from each request's actions, the solve is
+rooted at the current decision, and answers carry `"source":"search"`.
+Search reads strategies through the same store as the blueprint answers,
+so compact blueprints and `BASE+PREFLOP` overlays (either part compact)
+stay memory-mapped: the served set below is 2.4 GB on disk and peaks at
+1.8 GB resident with search on.
+
+```bash
+pluribus serve --blueprint it-800m.nrc+r800-sw.nrc --search --bucket-table buckets.bin \
+  --also it-800m-80bb.nrc+r80-sw.nrc:8000
+```
+
+Preflop answers come from the blueprint, except facing an all-in that a
+call would close: there search compares call against fold by Monte Carlo
+over the all-in players' Bayes ranges (from the blueprint's own jam
+frequencies) and mixes by the estimate's confidence, so a 3bb open and a
+100bb jam get called by about 5% of hands (AA–99, AK, AQ) rather than the
+untrained node's 12–16%.
+
+Measured through the probes at a 75 ms cap, this served set lowers the
+multiway bound by 268 ±120 mbb/hand against it-800m at 100bb and by 247
+±119 against the native 80bb blueprint at 80bb, heads-up lower at both;
+through `serve` the p99 latency is 83 ms on a 12-core box (BASELINES,
+29 Oct 2026). `lbr` and `br` accept compact blueprints and overlays too,
+and `--stack` to probe other depths.
 
 ### `benchmark`
 Replays all 10,000 hands the real Pluribus played in the Science 2019

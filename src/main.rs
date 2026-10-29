@@ -19,6 +19,7 @@ mod lbr;
 mod mirror;
 mod net;
 mod play;
+mod preflop;
 mod portfolio;
 mod river;
 mod search;
@@ -166,6 +167,34 @@ enum Cmd {
         /// uncapped.
         #[arg(long, default_value_t = u64::MAX)]
         linear_cap: u64,
+        /// Regret floor in chips per unit of the current linear weight
+        /// (floor = -C * t) instead of the absolute 2 * --prune-threshold,
+        /// which a long run makes almost zero relative to its updates.
+        #[arg(long)]
+        floor_per_weight: Option<f64>,
+        /// Apply --floor-per-weight to preflop infosets only.
+        #[arg(long, requires = "floor_per_weight")]
+        floor_preflop_only: bool,
+        /// Pruning threshold in chips per unit of the current linear weight
+        /// (threshold = -C * t) instead of the absolute --prune-threshold.
+        #[arg(long)]
+        prune_per_weight: Option<f64>,
+        /// Preflop exploration weight e in [0,1): other players' preflop
+        /// actions are sampled from (1-e)*strategy + e*uniform,
+        /// importance-weighted so the fixed point is unchanged; rare
+        /// preflop branches are trained more often. 0 = off.
+        #[arg(long, default_value_t = 0.0)]
+        preflop_explore: f64,
+        /// Preflop average from own-reach sweeps every this many iterations
+        /// (Pluribus's UPDATE-STRATEGY, enumerated) instead of accumulating
+        /// at sampled visits, which weights it by the other players' reach.
+        /// 0 = off.
+        #[arg(long, default_value_t = 0)]
+        preflop_sweep_every: u64,
+        /// Also save the blueprint at these iteration counts, as
+        /// `<out>.<iterations>` (comma-separated, e.g. 100000000,200000000).
+        #[arg(long, value_delimiter = ',')]
+        save_at: Vec<u64>,
         /// Worker threads (default: all cores).
         #[arg(long)]
         threads: Option<usize>,
@@ -231,6 +260,25 @@ enum Cmd {
         /// are played as if this deep.
         #[arg(long, default_value_t = 10_000)]
         stack: u32,
+        /// Another blueprint and its training stack, as PATH:STACK
+        /// (repeatable). Each request uses the blueprint nearest the acting
+        /// seat's effective stack.
+        #[arg(long)]
+        also: Vec<String>,
+        /// Re-solve postflop decisions online (every served blueprint, any
+        /// format; compact ones stay memory-mapped).
+        #[arg(long)]
+        search: bool,
+        /// Per-decision search budget in milliseconds (with --search).
+        #[arg(long, default_value_t = 75)]
+        search_ms: u64,
+        /// Per-decision cap on multiway resolve iterations (with --search).
+        #[arg(long, default_value_t = 20_000)]
+        search_iters: u64,
+        /// Precomputed flop/turn bucket table to prefill the card
+        /// abstraction (with --search; avoids cold-cache bucketing).
+        #[arg(long)]
+        bucket_table: Option<String>,
     },
     /// Export a blueprint in the compact, memory-mapped serving format.
     Compact {
@@ -262,6 +310,101 @@ enum Cmd {
         stack: u32,
         #[arg(long, default_value_t = 100_000)]
         hands: u64,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
+    /// Re-solve preflop with the blueprint's postflop play frozen for every
+    /// player: MCCFR on the preflop tree only, each traversal finishing the
+    /// hand by sampling the base blueprint postflop. Writes a preflop-only
+    /// blueprint; serve it as `--blueprint BASE+PREFLOP` or merge it with
+    /// `merge-preflop`.
+    RefinePreflop {
+        /// Base blueprint (training or compact) whose postflop is frozen.
+        #[arg(long)]
+        blueprint: String,
+        #[arg(long)]
+        bucket_table: Option<String>,
+        #[arg(long, default_value_t = 100_000_000)]
+        iters: u64,
+        #[arg(long)]
+        out: String,
+        #[arg(long, default_value_t = 10_000)]
+        stack: u32,
+        /// Regret floor per unit of linear weight (see train).
+        #[arg(long, default_value_t = 3.0e8)]
+        floor_per_weight: f64,
+        /// Disable negative-regret pruning.
+        #[arg(long)]
+        no_prune: bool,
+        #[arg(long, default_value_t = 0.0)]
+        preflop_explore: f64,
+        /// Sweep the preflop average (own-reach weighting) every this many
+        /// iterations; 0 = accumulate at sampled visits instead.
+        #[arg(long, default_value_t = 0)]
+        sweep_every: u64,
+        #[arg(long, default_value_t = 0)]
+        train_seed: u64,
+        #[arg(long, value_delimiter = ',')]
+        save_at: Vec<u64>,
+        /// At every save, print current vs average strategies at this
+        /// preflop line (preflop-probe syntax) for --report-hands.
+        #[arg(long)]
+        report_line: Option<String>,
+        #[arg(long, default_value = "AA,KK,QQ,TT,AKo,KQo,Q8o,86o")]
+        report_hands: String,
+        #[arg(long)]
+        threads: Option<usize>,
+    },
+    /// Replace a training blueprint's preflop strategies with a
+    /// `refine-preflop` result (infosets the refinement never reached keep
+    /// the base strategy).
+    MergePreflop {
+        #[arg(long)]
+        base: String,
+        #[arg(long)]
+        preflop: String,
+        #[arg(long)]
+        out: String,
+    },
+    /// The blueprint's strategy for every starting hand at one preflop
+    /// node, with the all-in share overall and for KK, QQ, JJ, TT, AKs, AKo.
+    PreflopProbe {
+        #[arg(long)]
+        blueprint: String,
+        /// The blueprint's training stack in chips.
+        #[arg(long, default_value_t = 10_000)]
+        stack: u32,
+        /// Preflop actions from the start of the hand, button in seat 0
+        /// (UTG acts first): f, c, rN (raise BET_SIZES[N] of the pot), a.
+        /// "f f f r3 f" is the big blind facing a 2.9bb button open.
+        #[arg(long)]
+        line: String,
+        /// Print every hand class, not just the summary and premiums.
+        #[arg(long)]
+        all: bool,
+    },
+    /// What each action at a preflop node is worth to a hand class when
+    /// everyone, the hero included, plays the blueprint afterwards, against
+    /// the blueprint's own ranges for the line.
+    ActionEv {
+        #[arg(long)]
+        blueprint: String,
+        #[arg(long, default_value_t = 10_000)]
+        stack: u32,
+        /// Preflop line, as for preflop-probe.
+        #[arg(long)]
+        line: String,
+        /// Comma-separated hand classes, or "all" for a node summary: the
+        /// best response's gain over the blueprint's mix, averaged over
+        /// the hands that reach the node.
+        #[arg(long, default_value = "KK,QQ,JJ,TT,AKs,AKo")]
+        hands: String,
+        /// Deals per hand class.
+        #[arg(long, default_value_t = 200_000)]
+        deals: u64,
+        /// Preloaded flop/turn bucket table (speed only).
+        #[arg(long)]
+        bucket_table: Option<String>,
         #[arg(long, default_value_t = 42)]
         seed: u64,
     },
@@ -374,6 +517,9 @@ enum Cmd {
         /// blueprint's.
         #[arg(long)]
         search_buckets: Option<u16>,
+        /// Starting stack in chips: the depth the blueprint was trained at.
+        #[arg(long, default_value_t = 10_000)]
+        stack: u32,
     },
     /// Lower-bound the blueprint's exploitability with a Local Best Response
     /// agent (Lisý & Bowling 2017): heads-up blind vs blind, other seats fold.
@@ -415,6 +561,9 @@ enum Cmd {
         /// blueprint's.
         #[arg(long)]
         search_buckets: Option<u16>,
+        /// Starting stack in chips: the depth the blueprint was trained at.
+        #[arg(long, default_value_t = 10_000)]
+        stack: u32,
     },
     /// Safety ablation: unsafe vs gadget river resolving under corrupted
     /// range beliefs — reports best-response margins beyond safety values.
@@ -604,6 +753,12 @@ fn main() {
             snapshot_avg,
             multiway_focus,
             linear_cap,
+            floor_per_weight,
+            floor_preflop_only,
+            prune_per_weight,
+            preflop_explore,
+            preflop_sweep_every,
+            save_at,
             threads,
         } => {
             if let Some(t) = threads {
@@ -632,6 +787,11 @@ fn main() {
                 snapshot_avg,
                 multiway_focus,
                 linear_cap,
+                floor_per_weight,
+                floor_preflop_only,
+                prune_per_weight,
+                preflop_explore,
+                preflop_sweep: preflop_sweep_every > 0,
                 ..TrainConfig::default()
             };
             let trainer = match &resume {
@@ -735,10 +895,13 @@ fn main() {
 
             println!(
                 "training {players}-max, {iters} iterations, menu {menu:?}, pruning {}, \
-                 vr baselines {}, snapshot avg {}, multiway focus {multiway_focus}",
+                 vr baselines {}, snapshot avg {}, multiway focus {multiway_focus}, \
+                 floor per weight {floor_per_weight:?}{}, prune per weight {prune_per_weight:?}, \
+                 preflop explore {preflop_explore}",
                 if no_prune { "off" } else if per_action_prune { "per-action" } else { "pluribus" },
                 if vr_baseline { "on" } else { "off" },
-                if snapshot_avg { "on" } else { "off" }
+                if snapshot_avg { "on" } else { "off" },
+                if floor_preflop_only { " (preflop only)" } else { "" }
             );
             let pb = ProgressBar::new(iters);
             pb.set_style(
@@ -759,13 +922,34 @@ fn main() {
             let mut done_before = 0u64;
             let mut snapshots = 0u32;
             while done_before < iters {
-                let this = chunk.min(iters - done_before);
+                let next_save = save_at.iter().copied().filter(|&n| n > done_before).min();
+                let next_sweep = if preflop_sweep_every > 0 {
+                    (done_before / preflop_sweep_every + 1) * preflop_sweep_every
+                } else {
+                    u64::MAX
+                };
+                let this = chunk
+                    .min(iters - done_before)
+                    .min(next_save.map_or(u64::MAX, |n| n - done_before))
+                    .min(next_sweep - done_before);
                 let base = done_before;
                 trainer.run(this, &|done| pb.set_position(base + done));
                 done_before += this;
+                if preflop_sweep_every > 0 && (done_before % preflop_sweep_every == 0 || done_before == iters) {
+                    let t = trainer.iterations().min(linear_cap) as f64;
+                    trainer.sweep_preflop_average(t);
+                }
                 if snapshot_avg && done_before * 10 > iters {
                     trainer.snapshot_strategy();
                     snapshots += 1;
+                }
+                if save_at.contains(&done_before) && done_before < iters {
+                    let path = format!("{out}.{done_before}");
+                    trainer
+                        .to_blueprint()
+                        .save(&path)
+                        .unwrap_or_else(|e| die(&format!("blueprint save failed: {e}")));
+                    println!("saved {path} at {:.0}s", started.elapsed().as_secs_f64());
                 }
                 if let Some(path) = &checkpoint {
                     trainer
@@ -874,9 +1058,49 @@ fn main() {
             play::play(&policy, &opts);
         }
 
-        Cmd::Serve { blueprint, stack } => {
-            let (bot, cfg) = load_bot(&blueprint, stack);
-            serve::serve(&bot, &cfg);
+        Cmd::Serve { blueprint, stack, also, search, search_ms, search_iters, bucket_table } => {
+            let table = bucket_table.as_ref().map(|path| {
+                abstraction::BucketTable::load(path)
+                    .unwrap_or_else(|e| die(&format!("cannot load bucket table '{path}': {e}")))
+            });
+            let params = SearchParams {
+                time_ms: search_ms,
+                max_iters: search_iters,
+                ..SearchParams::default()
+            };
+            let load = |path: &str, depth: u32| -> serve::Served {
+                let (bot, cfg) = load_bot(path, depth);
+                if !search {
+                    return serve::Served { bot, cfg, search: None };
+                }
+                if let Some(t) = &table {
+                    if !t.matches(&bot.abs.cfg) {
+                        die(&format!("the bucket table does not match '{path}'s abstraction"));
+                    }
+                    bot.abs.prefill_canon(&t.entries);
+                }
+                let strategies: Arc<dyn mirror::Strategies> = Arc::from(bot.strategies);
+                let policy = Policy::from_strategies(strategies.clone(), cfg.num_players, bot.abs.clone());
+                let bot = mirror::Bot { abs: bot.abs, strategies: Box::new(strategies) };
+                let train_cfg = TrainConfig {
+                    hand: cfg.clone(),
+                    prune_after: u64::MAX,
+                    ..TrainConfig::default()
+                };
+                serve::Served { bot, cfg, search: Some(serve::Searcher { policy, params, train_cfg }) }
+            };
+            let mut served = vec![load(&blueprint, stack)];
+            for spec in &also {
+                let (path, depth) = spec
+                    .rsplit_once(':')
+                    .and_then(|(p, d)| Some((p, d.parse::<u32>().ok()?)))
+                    .unwrap_or_else(|| die(&format!("--also expects PATH:STACK, got '{spec}'")));
+                served.push(load(path, depth));
+            }
+            if served.iter().any(|s| s.cfg.num_players != served[0].cfg.num_players) {
+                die("every served blueprint must have the same number of players");
+            }
+            serve::serve(&served);
         }
 
         Cmd::Compact { blueprint, out, steps } => {
@@ -895,6 +1119,201 @@ fn main() {
             );
         }
 
+        Cmd::RefinePreflop {
+            blueprint,
+            bucket_table,
+            iters,
+            out,
+            stack,
+            floor_per_weight,
+            no_prune,
+            preflop_explore,
+            sweep_every,
+            train_seed,
+            save_at,
+            report_line,
+            report_hands,
+            threads,
+        } => {
+            if let Some(t) = threads {
+                rayon::ThreadPoolBuilder::new().num_threads(t).build_global().expect("thread pool");
+            }
+            let (bot, cfg) = load_bot(&blueprint, stack);
+            if let Some(path) = &bucket_table {
+                let t = abstraction::BucketTable::load(path)
+                    .unwrap_or_else(|e| die(&format!("cannot load bucket table '{path}': {e}")));
+                if !t.matches(&bot.abs.cfg) {
+                    die(&format!("bucket table '{path}' does not match the blueprint's abstraction"));
+                }
+                bot.abs.prefill_canon(&t.entries);
+            }
+            let train_cfg = TrainConfig {
+                hand: cfg.clone(),
+                prune_after: if no_prune { u64::MAX } else { 200_000 },
+                seed: train_seed,
+                floor_per_weight: Some(floor_per_weight),
+                preflop_explore,
+                preflop_sweep: sweep_every > 0,
+                ..TrainConfig::default()
+            };
+            let frozen: Arc<dyn mirror::Strategies> = Arc::from(bot.strategies);
+            let trainer = Trainer::new(bot.abs.clone(), train_cfg).with_frozen_postflop(Some(frozen));
+            println!(
+                "refining preflop over {blueprint}: {iters} iterations, floor {floor_per_weight:e} per weight, \
+                 pruning {}, explore {preflop_explore}",
+                if no_prune { "off" } else { "pluribus" }
+            );
+            let started = std::time::Instant::now();
+            let mut done = 0u64;
+            let mut marks: Vec<u64> = save_at.iter().copied().filter(|&n| n < iters).collect();
+            marks.sort_unstable();
+            marks.push(iters);
+            let mut sweep_secs = 0.0;
+            for m in marks {
+                if sweep_every > 0 {
+                    while done < m {
+                        let step = sweep_every.min(m - done);
+                        trainer.run(step, &|_| {});
+                        done += step;
+                        let t0 = std::time::Instant::now();
+                        trainer.sweep_preflop_average(done as f64);
+                        sweep_secs += t0.elapsed().as_secs_f64();
+                    }
+                } else {
+                    trainer.run(m - done, &|_| {});
+                }
+                done = m;
+                let path = if m == iters { out.clone() } else { format!("{out}.{m}") };
+                let bp = trainer.to_blueprint();
+                bp.save(&path).unwrap_or_else(|e| die(&format!("save failed: {e}")));
+                if let Some(line) = &report_line {
+                    let n = preflop::node(&cfg, &trainer.abs, line, cards::fresh_deck()).unwrap_or_else(|e| die(&e));
+                    for class in report_hands.split(',') {
+                        let combo = preflop::class_combos(class).unwrap_or_else(|e| die(&e))[0];
+                        let b = abstraction::preflop_bucket(combo);
+                        let f = |v: Option<Vec<f64>>| {
+                            v.map_or("unvisited".to_string(), |v| {
+                                v.iter().map(|x| format!("{:>4.0}", 100.0 * x)).collect::<Vec<_>>().join("")
+                            })
+                        };
+                        println!(
+                            "  {class:<4} current {}  average {}",
+                            f(trainer.current_strategy(b, &n.hist)),
+                            f(trainer.avg_strategy(b, &n.hist))
+                        );
+                    }
+                }
+                println!(
+                    "{m} iterations at {:.0}s ({:.0} iters/s, {sweep_secs:.0}s sweeping): {} preflop strategies -> {path}",
+                    started.elapsed().as_secs_f64(),
+                    m as f64 / started.elapsed().as_secs_f64(),
+                    bp.strategies.len()
+                );
+            }
+        }
+        Cmd::MergePreflop { base, preflop, out } => {
+            let mut bp = Blueprint::load(&base).unwrap_or_else(|e| die(&format!("cannot load '{base}': {e}")));
+            let pre = Blueprint::load(&preflop).unwrap_or_else(|e| die(&format!("cannot load '{preflop}': {e}")));
+            let before = bp.strategies.len();
+            // Preflop infosets the refinement never reached keep the base
+            // strategy rather than falling back to check/call.
+            bp.strategies.retain(|k, _| !pre.strategies.contains_key(k));
+            let replaced = before - bp.strategies.len();
+            let added = pre.strategies.len();
+            bp.strategies.extend(pre.strategies);
+            bp.save(&out).unwrap_or_else(|e| die(&format!("save failed: {e}")));
+            println!(
+                "{out}: {replaced} preflop strategies replaced, {} new, {} in all",
+                added - replaced,
+                bp.strategies.len()
+            );
+        }
+        Cmd::PreflopProbe { blueprint, stack, line, all } => {
+            let (bot, cfg) = load_bot(&blueprint, stack);
+            let p = preflop::probe(&bot, &cfg, &line).unwrap_or_else(|e| die(&e));
+            println!(
+                "line '{line}': all-in {:.1}% of combos ({:.0}% of them residue under 5%), premiums {:.1}%",
+                100.0 * p.all_in,
+                100.0 * p.residue,
+                100.0 * p.premium_all_in
+            );
+            print!("{:<5}", "hand");
+            for a in &p.actions {
+                print!(" {a:>7}");
+            }
+            println!();
+            for (name, row) in &p.rows {
+                if all || preflop::PREMIUMS.contains(&name.as_str()) {
+                    print!("{name:<5}");
+                    for x in row {
+                        print!(" {:>6.1}%", 100.0 * x);
+                    }
+                    println!();
+                }
+            }
+        }
+        Cmd::ActionEv { blueprint, stack, line, hands, deals, bucket_table, seed } => {
+            let (bot, cfg) = load_bot(&blueprint, stack);
+            if let Some(path) = &bucket_table {
+                let t = abstraction::BucketTable::load(path)
+                    .unwrap_or_else(|e| die(&format!("cannot load bucket table '{path}': {e}")));
+                if !t.matches(&bot.abs.cfg) {
+                    die(&format!("bucket table '{path}' does not match the blueprint's abstraction"));
+                }
+                bot.abs.prefill_canon(&t.entries);
+            }
+            if hands == "all" {
+                // Node summary: the best response's gain over the mix,
+                // weighted by combos and the hero's own reach.
+                let mut rows = Vec::new();
+                for class in preflop::all_classes() {
+                    let r = preflop::action_ev(&bot, &cfg, &line, &class, deals, seed)
+                        .unwrap_or_else(|e| die(&e));
+                    let w = preflop::class_combos(&class).unwrap().len() as f64 * r.hero_reach;
+                    rows.push((w, r));
+                }
+                let tw: f64 = rows.iter().map(|r| r.0).sum();
+                let gain: f64 = rows.iter().map(|r| r.0 * r.1.gain()).sum::<f64>() / tw;
+                println!(
+                    "'{line}': best-response gain over the mix {gain:.3} bb per reaching hand \
+                     ({deals} deals per class, {tw:.0} reach-weighted combos)"
+                );
+                rows.sort_by(|a, b| (b.0 * b.1.gain()).total_cmp(&(a.0 * a.1.gain())));
+                for (w, r) in rows.iter().take(12) {
+                    let best = (0..r.actions.len()).max_by(|&i, &j| r.vs_mix[i].0.total_cmp(&r.vs_mix[j].0)).unwrap();
+                    let mix: Vec<String> = r.actions.iter().zip(&r.mix).map(|(a, p)| format!("{a} {:.0}%", 100.0 * p)).collect();
+                    println!(
+                        "  {:<5} weight {:>5.1}  gain {:+.2} bb by {}  (mix: {})",
+                        r.class, w, r.gain(), r.actions[best], mix.join(", ")
+                    );
+                }
+                return;
+            }
+            for class in hands.split(',') {
+                let t0 = std::time::Instant::now();
+                let r = preflop::action_ev(&bot, &cfg, &line, class.trim(), deals, seed)
+                    .unwrap_or_else(|e| die(&e));
+                println!(
+                    "{} at '{line}': {} deals, ESS {:.0}, {:.0}s",
+                    r.class,
+                    r.deals,
+                    r.ess,
+                    t0.elapsed().as_secs_f64()
+                );
+                println!("  {:<8} {:>6} {:>16} {:>16}", "action", "mix", "EV bb", "EV - mix bb");
+                for j in 0..r.actions.len() {
+                    println!(
+                        "  {:<8} {:>5.1}% {:>+9.2} ±{:<5.2} {:>+9.2} ±{:<5.2}",
+                        r.actions[j],
+                        100.0 * r.mix[j],
+                        r.ev[j].0,
+                        r.ev[j].1,
+                        r.vs_mix[j].0,
+                        r.vs_mix[j].1
+                    );
+                }
+            }
+        }
         Cmd::BucketCheck { table, hands, seed } => {
             let t = abstraction::BucketTable::load(&table)
                 .unwrap_or_else(|e| die(&format!("cannot load bucket table '{table}': {e}")));
@@ -1074,6 +1493,7 @@ fn main() {
             search_iters,
             decision_root,
             search_buckets,
+            stack,
         } => {
             let params = search.then_some(SearchParams {
                 time_ms: search_ms,
@@ -1085,6 +1505,7 @@ fn main() {
                 .with_search_buckets(search_buckets);
             let cfg = HandConfig {
                 num_players: policy.blueprint.num_players,
+                stack,
                 ..HandConfig::default()
             };
             println!(
@@ -1117,6 +1538,9 @@ fn main() {
             if let Some(r) = bot::fallback_report() {
                 println!("{r}");
             }
+            if let Some(r) = bot::search_timing_report() {
+                println!("{r}");
+            }
         }
 
         Cmd::Br {
@@ -1130,6 +1554,7 @@ fn main() {
             search_iters,
             decision_root,
             search_buckets,
+            stack,
         } => {
             let params = search.then_some(SearchParams {
                 time_ms: search_ms,
@@ -1141,6 +1566,7 @@ fn main() {
                 .with_search_buckets(search_buckets);
             let cfg = HandConfig {
                 num_players: policy.blueprint.num_players,
+                stack,
                 ..HandConfig::default()
             };
             println!(
@@ -1163,6 +1589,9 @@ fn main() {
                 started.elapsed().as_secs_f64()
             );
             println!("(tighter lower bound on exploitability than lbr; 0 = unexploited)");
+            if let Some(r) = bot::search_timing_report() {
+                println!("{r}");
+            }
         }
 
         Cmd::AblateSafety { spots, iters, seed } => {
@@ -1562,6 +1991,11 @@ fn load_policy(path: &str) -> Policy {
 }
 
 fn load_policy_strat(path: &str, strat_prev: Option<&str>) -> Policy {
+    // Compact blueprints and preflop overlays serve lookups only.
+    if compact::is_compact(path) || path.contains('+') {
+        let (bot, cfg) = load_bot(path, HandConfig::default().stack);
+        return Policy::from_strategies(Arc::from(bot.strategies), cfg.num_players, bot.abs);
+    }
     let bp = Blueprint::load(path).unwrap_or_else(|e| {
         die(&format!(
             "cannot load blueprint '{path}': {e}\nrun `pluribus train --out {path}` first"
@@ -1597,6 +2031,18 @@ fn load_policy_strat(path: &str, strat_prev: Option<&str>) -> Policy {
 /// blueprint was trained at.
 fn load_bot(path: &str, stack: u32) -> (mirror::Bot, HandConfig) {
     let fail = |e: std::io::Error| -> ! { die(&format!("cannot load blueprint '{path}': {e}")) };
+    if let Some((base, pre)) = path.split_once('+') {
+        let (bot, cfg) = load_bot(base, stack);
+        let fail = |e: std::io::Error| -> ! { die(&format!("cannot load preflop '{pre}': {e}")) };
+        let preflop: Box<dyn mirror::Strategies> = if compact::is_compact(pre) {
+            Box::new(compact::CompactBlueprint::open(pre).unwrap_or_else(|e| fail(e)))
+        } else {
+            Box::new(Blueprint::load(pre).unwrap_or_else(|e| fail(e)))
+        };
+        eprintln!("{pre}: {} preflop strategies over {base}", preflop.len());
+        let strategies = Box::new(mirror::PreflopOverlay { preflop, base: bot.strategies });
+        return (mirror::Bot { abs: bot.abs, strategies }, cfg);
+    }
     let (strategies, players, abs_cfg, centroids): (Box<dyn mirror::Strategies>, _, _, _) =
         if compact::is_compact(path) {
             let c = compact::CompactBlueprint::open(path).unwrap_or_else(|e| fail(e));

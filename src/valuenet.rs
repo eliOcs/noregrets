@@ -123,7 +123,7 @@ fn sample_one(
         assert!(guard < 200, "sample hand did not terminate");
         let p = table.real.to_act();
         let a = policy.act_blueprint(&table.shadow, &table.hist, &mut rng);
-        tracker.observe(p, a, &table.shadow, &table.hist, &policy.blueprint, &policy.abs);
+        tracker.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
         let street_before = table.real.street();
         table.apply_abs(a, &policy.abs);
         if table.real.street() != street_before {

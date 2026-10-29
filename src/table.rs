@@ -416,7 +416,7 @@ pub fn run_eval_search(
                 } else {
                     baseline_action(baseline, &table.shadow, &policy.abs, &mut rng)
                 };
-                tracker.observe(p, a, &table.shadow, &table.hist, &policy.blueprint, &policy.abs);
+                tracker.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
                 let street_before = table.real.street();
                 table.apply_abs(a, &policy.abs);
                 if table.real.street() != street_before {
@@ -510,7 +510,7 @@ pub fn run_eval_paired_policies(
                 _ => policy.act_blueprint(&table.shadow, &table.hist, &mut seat_rngs[p]),
             };
             if search.is_some() {
-                tracker.observe(p, a, &table.shadow, &table.hist, &policy.blueprint, &policy.abs);
+                tracker.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
             }
             let street_before = table.real.street();
             table.apply_abs(a, &policy.abs);

@@ -303,7 +303,7 @@ impl SubgameBr<'_> {
                 cache.resize(b + 1, None);
             }
             if cache[b].is_none() {
-                let s = self.policy.blueprint.get(buckets[ci], hist).and_then(|s| {
+                let s = self.policy.strategies.get(buckets[ci], hist).and_then(|s| {
                     if s.len() != n {
                         return None;
                     }
@@ -481,7 +481,7 @@ pub fn run_br(
                         lbr.observe(&mut range, &table.shadow, &table.hist, &acts, idx);
                     }
                     if let Some(tr) = tracker.as_mut() {
-                        tr.observe(p, a, &table.shadow, &table.hist, &policy.blueprint, &policy.abs);
+                        tr.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
                     }
                     table.apply_abs(a, &policy.abs);
                 } else if p == probe_seat {
@@ -499,7 +499,7 @@ pub fn run_br(
                         lbr.action(&table, &range, bot_seat, &mut rng)
                     };
                     if let Some(tr) = tracker.as_mut() {
-                        tr.observe(p, a, &table.shadow, &table.hist, &policy.blueprint, &policy.abs);
+                        tr.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
                     }
                     table.apply_abs(a, &policy.abs);
                 } else {
@@ -509,7 +509,7 @@ pub fn run_br(
                             AbsAction::Fold,
                             &table.shadow,
                             &table.hist,
-                            &policy.blueprint,
+                            &*policy.strategies,
                             &policy.abs,
                         );
                     }

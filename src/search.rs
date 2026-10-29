@@ -23,6 +23,11 @@ pub const NUM_COMBOS: usize = 1326;
 /// never fully exclude a combo.
 const OBS_FLOOR: f64 = 0.02;
 
+/// Floor of the near-hard Bayes weights (`hard_weights`): rare actions
+/// such as a preflop jam keep their information instead of drowning in a
+/// floor larger than their own frequency.
+const HARD_FLOOR: f64 = 1e-3;
+
 #[inline]
 pub fn combo_index(a: Card, b: Card) -> usize {
     let (lo, hi) = if a < b { (a, b) } else { (b, a) };
@@ -49,6 +54,8 @@ pub struct RangeTracker {
     combos: Vec<[Card; 2]>,
     /// weights[seat][combo]; unnormalized.
     weights: Vec<Vec<f64>>,
+    /// The same observations with `HARD_FLOOR` and no widening.
+    hard: Vec<Vec<f64>>,
     /// Belief widening for opponents NOT known to play the blueprint
     /// (live/external play). Off by default: self-play harnesses
     /// (valuenet, distill, eval) face literal blueprint opponents where
@@ -67,6 +74,7 @@ impl RangeTracker {
             n,
             combos: all_combos(),
             weights: vec![vec![1.0; NUM_COMBOS]; n],
+            hard: vec![vec![1.0; NUM_COMBOS]; n],
             widen: false,
             round_start: vec![vec![1.0; NUM_COMBOS]; n],
         }
@@ -79,6 +87,7 @@ impl RangeTracker {
             n: self.n,
             combos: self.combos.clone(),
             weights: self.round_start.clone(),
+            hard: self.hard.clone(),
             widen: self.widen,
             round_start: self.round_start.clone(),
         }
@@ -95,7 +104,7 @@ impl RangeTracker {
     pub fn exclude(&mut self, cards: &[Card]) {
         for (i, combo) in self.combos.iter().enumerate() {
             if combo.iter().any(|c| cards.contains(c)) {
-                for w in &mut self.weights {
+                for w in self.weights.iter_mut().chain(&mut self.hard) {
                     w[i] = 0.0;
                 }
             }
@@ -109,11 +118,43 @@ impl RangeTracker {
     /// ranges in tests, learned ranges from a belief model).
     pub fn set_all(&mut self, seat: usize, w: f64) {
         self.weights[seat].fill(w);
+        self.hard[seat].fill(w);
     }
 
     /// Overwrite one combo's weight for a seat.
     pub fn set_weight(&mut self, seat: usize, hole: [Card; 2], w: f64) {
         self.weights[seat][combo_index(hole[0], hole[1])] = w;
+        self.hard[seat][combo_index(hole[0], hole[1])] = w;
+    }
+
+    /// Near-hard Bayes weights for a seat (floor `HARD_FLOOR`, no
+    /// widening), indexed by `combo_index`.
+    pub fn hard_weights(&self, seat: usize) -> &[f64] {
+        &self.hard[seat]
+    }
+
+    /// Sample a hole for `seat` from its near-hard weights, avoiding (and
+    /// then marking) `used` cards. None when no compatible combo is left.
+    pub fn sample_hard(&self, seat: usize, used: &mut [bool; 52], rng: &mut SmallRng) -> Option<[Card; 2]> {
+        let w = &self.hard[seat];
+        let ok = |ci: usize| w[ci] > 0.0 && !used[self.combos[ci][0] as usize] && !used[self.combos[ci][1] as usize];
+        let total: f64 = (0..NUM_COMBOS).filter(|&ci| ok(ci)).map(|ci| w[ci]).sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut r = rng.random::<f64>() * total;
+        let mut last = None;
+        for ci in (0..NUM_COMBOS).filter(|&ci| ok(ci)) {
+            last = Some(ci);
+            r -= w[ci];
+            if r <= 0.0 {
+                break;
+            }
+        }
+        let combo = self.combos[last?];
+        used[combo[0] as usize] = true;
+        used[combo[1] as usize] = true;
+        Some(combo)
     }
 
     /// Raw (unnormalized) weights over all 1326 combos for a seat, indexed
@@ -146,7 +187,7 @@ impl RangeTracker {
         taken: AbsAction,
         h: &Hand,
         hist: &[u8],
-        bp: &Blueprint,
+        bp: &dyn crate::mirror::Strategies,
         abs: &Abstraction,
     ) {
         let acts = abs.abstract_actions(h);
@@ -155,22 +196,32 @@ impl RangeTracker {
         };
         let board = h.board().to_vec();
         let combos = &self.combos;
-        let updates: Vec<f64> = self.weights[seat]
+        let hard = &self.hard[seat];
+        let (updates, hard_updates): (Vec<f64>, Vec<f64>) = self.weights[seat]
             .par_iter()
             .enumerate()
             .map(|(ci, &w)| {
-                if w <= 0.0 {
-                    return w;
+                if w <= 0.0 && hard[ci] <= 0.0 {
+                    return (w, hard[ci]);
                 }
                 let mut rng = SmallRng::seed_from_u64(0xB0B0 ^ ci as u64);
                 let bucket = abs.bucket(combos[ci], &board, &mut rng);
-                let p = match bp.get(bucket, hist) {
-                    Some(s) if s.len() == acts.len() => (s[idx] as f64).max(OBS_FLOOR),
-                    _ => 1.0, // unseen infoset: no information
+                // Stored weights need not be normalized (compact
+                // blueprints keep bytes).
+                let q = match bp.get(bucket, hist) {
+                    Some(s) if s.len() == acts.len() => {
+                        let total: f64 = s.iter().map(|&x| x as f64).sum();
+                        (total > 0.0).then(|| s[idx] as f64 / total)
+                    }
+                    _ => None, // unseen infoset: no information
                 };
-                w * p
+                match q {
+                    Some(q) => (w * q.max(OBS_FLOOR), hard[ci] * q.max(HARD_FLOOR)),
+                    None => (w, hard[ci]),
+                }
             })
-            .collect();
+            .unzip();
+        self.hard[seat] = hard_updates;
         // Belief widening: when the observed action is UNLIKELY under the
         // blueprint model of this seat (low range-mass retention), the
         // model just proved wrong for this opponent — partially undo the

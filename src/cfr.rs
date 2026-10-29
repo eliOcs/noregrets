@@ -70,6 +70,40 @@ pub struct TrainConfig {
     /// with an uncapped weight regrets grow ~t^2 over a long run and the
     /// fixed pruning threshold turns over-aggressive. u64::MAX = uncapped.
     pub linear_cap: u64,
+    /// Regret floor in chips per unit of the current iteration weight:
+    /// floor = -scale * weight. Regret updates carry the linear weight t,
+    /// so the default absolute floor (2 * prune_threshold) is less than a
+    /// chip of a current update deep after a few hundred million
+    /// iterations, and negative regret is forgotten after one lucky
+    /// sample: training degenerates to stochastic RM+, which keeps mass on
+    /// bad high-variance actions such as a junk all-in. None = absolute.
+    pub floor_per_weight: Option<f64>,
+    /// Apply `floor_per_weight` to preflop infosets only; postflop keeps
+    /// the absolute floor.
+    pub floor_preflop_only: bool,
+    /// Pruning threshold in chips per unit of the current iteration
+    /// weight (threshold = -scale * weight). None = absolute
+    /// `prune_threshold`.
+    pub prune_per_weight: Option<f64>,
+    /// Preflop exploration weight e in [0,1): at a non-traverser's
+    /// preflop node the action is drawn from (1-e)*sigma + e*uniform and
+    /// every update is importance-weighted by sigma/q, so the fixed point
+    /// is unchanged. Rare preflop branches (a jam over an open, and the
+    /// cold-caller behind it) are then visited every e/n of the time
+    /// rather than at sigma's rate; regret matching is invariant to the
+    /// common scale of an infoset's updates, so more, smaller-weighted
+    /// visits mean less noise there. 0 = off.
+    pub preflop_explore: f64,
+    /// Preflop average strategy from periodic sweeps (`sweep_preflop_average`)
+    /// instead of accumulating at sampled opponent-node visits. A visit's
+    /// probability includes the other players' reach, so the visit-based
+    /// average is weighted toward iterations in which the others happened
+    /// to reach the node often: a cold-caller's average is dominated by
+    /// the iterations in which the jammer's current strategy jammed junk,
+    /// when calling wide was right. CFR's average weights by the player's
+    /// own reach only, which the sweep computes exactly (Pluribus's
+    /// UPDATE-STRATEGY, enumerated rather than sampled).
+    pub preflop_sweep: bool,
 }
 
 impl Default for TrainConfig {
@@ -84,6 +118,11 @@ impl Default for TrainConfig {
             snapshot_avg: false,
             multiway_focus: 0.0,
             linear_cap: u64::MAX,
+            floor_per_weight: None,
+            floor_preflop_only: false,
+            prune_per_weight: None,
+            preflop_explore: 0.0,
+            preflop_sweep: false,
         }
     }
 }
@@ -94,7 +133,7 @@ impl Default for TrainConfig {
 /// This is Pluribus's guard against the blueprint's leaf values being
 /// exploitable by a single fixed continuation.
 pub struct LeafCfg {
-    pub blueprint: Arc<Blueprint>,
+    pub strategies: Arc<dyn crate::mirror::Strategies>,
     /// The blueprint's own abstraction (rollouts look infosets up in it;
     /// the solver's abstraction may be finer).
     pub abs: Arc<Abstraction>,
@@ -196,6 +235,12 @@ pub struct Trainer {
     /// run relearns them from zero, which costs variance, not bias.
     vr: bool,
     baselines: DashMap<InfoKey, Vec<f32>, ahash::RandomState>,
+    /// Preflop refinement: every postflop decision, the traverser's
+    /// included, is sampled from these fixed strategies and nothing
+    /// postflop is learned. Preflop is then an equilibrium computation of
+    /// its own, with the blueprint's postflop play as everyone's
+    /// continuation; it needs no postflop enumeration, so it is cheap.
+    frozen_postflop: Option<Arc<dyn crate::mirror::Strategies>>,
 }
 
 const BASELINE_ALPHA: f32 = 0.5;
@@ -279,7 +324,53 @@ impl Trainer {
             rnr_opp: None,
             vr: false,
             baselines: DashMap::with_hasher(ahash::RandomState::new()),
+            frozen_postflop: None,
         }
+    }
+
+    pub fn with_frozen_postflop(mut self, s: Option<Arc<dyn crate::mirror::Strategies>>) -> Self {
+        self.frozen_postflop = s;
+        self
+    }
+
+    /// Play the hand out from a postflop node with everyone sampling the
+    /// frozen strategies (check/call on unseen infosets, as served).
+    fn frozen_rollout(
+        &self,
+        frozen: &dyn crate::mirror::Strategies,
+        h: &Hand,
+        hist: &[u8],
+        traverser: usize,
+        rng: &mut SmallRng,
+    ) -> f64 {
+        let mut h = h.clone();
+        let mut hist = hist.to_vec();
+        let mut probs: Vec<f64> = Vec::with_capacity(MAX_ACTS);
+        while !h.is_terminal() {
+            let p = h.to_act();
+            let acts = self.abs.abstract_actions(&h);
+            let bucket = self.abs.bucket(h.hole(p), h.board(), rng);
+            probs.clear();
+            match frozen.get(bucket, &hist) {
+                Some(s) if s.len() == acts.len() && s.iter().sum::<f32>() > 0.0 => {
+                    probs.extend(s.iter().map(|&x| x as f64));
+                    let t: f64 = probs.iter().sum();
+                    probs.iter_mut().for_each(|x| *x /= t);
+                }
+                _ => {
+                    probs.resize(acts.len(), 0.0);
+                    probs[acts.iter().position(|&a| a == AbsAction::CheckCall).unwrap()] = 1.0;
+                }
+            }
+            let a = acts[sample_index(&probs, rng)];
+            let street = h.street();
+            h.apply(self.abs.concrete(&h, a));
+            hist.push(a.token());
+            if !h.is_terminal() && h.street() != street {
+                hist.push(TOKEN_STREET_SEP);
+            }
+        }
+        h.utilities()[traverser] as f64
     }
 
     pub fn with_qre(mut self, lambda: Option<f64>) -> Self {
@@ -329,11 +420,22 @@ impl Trainer {
         self
     }
 
-    fn regret_floor(&self) -> f64 {
+    fn regret_floor(&self, weight: f64, street: Street) -> f64 {
         if self.plus {
             0.0
+        } else if let Some(c) = self.cfg.floor_per_weight.filter(|_| {
+            !self.cfg.floor_preflop_only || street == Street::Preflop
+        }) {
+            -c * weight
         } else {
             2.0 * self.cfg.prune_threshold
+        }
+    }
+
+    fn prune_threshold(&self, weight: f64) -> f64 {
+        match self.cfg.prune_per_weight {
+            Some(c) => -c * weight,
+            None => self.cfg.prune_threshold,
         }
     }
 
@@ -406,6 +508,7 @@ impl Trainer {
         sampler: Option<&RootSampler<'_>>,
     ) {
         let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_millis(time_ms);
         let n = root.num_players();
         while self.iterations() < max_iters
             && (start.elapsed().as_millis() as u64) < time_ms
@@ -413,6 +516,11 @@ impl Trainer {
             let t0 = self.iters_done.load(Ordering::Relaxed);
             let batch = 1024.min(max_iters - t0);
             (0..batch).into_par_iter().for_each(|j| {
+                // A batch of depth-limited flop traversals on one thread can
+                // take seconds; stop at the deadline, not after the batch.
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
                 let t = t0 + j + 1;
                 let mut rng =
                     SmallRng::seed_from_u64(t.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xACE);
@@ -447,6 +555,11 @@ impl Trainer {
     ) -> f64 {
         if h.is_terminal() {
             return h.utilities()[traverser] as f64;
+        }
+        if let Some(frozen) = &self.frozen_postflop {
+            if h.street() != Street::Preflop {
+                return self.frozen_rollout(frozen.as_ref(), h, hist, traverser, rng);
+            }
         }
         if let Some(lc) = &self.leaf {
             if h.street() > lc.limit {
@@ -515,8 +628,9 @@ impl Trainer {
             let pluribus = self.cfg.pluribus_prune;
             let mut explore = [true; MAX_ACTS];
             if prune_ok && !(pluribus && h.street() == Street::River) {
+                let threshold = self.prune_threshold(weight);
                 for (e, &r) in explore.iter_mut().zip(regrets) {
-                    *e = r >= self.cfg.prune_threshold
+                    *e = r >= threshold
                         || (!pluribus && rng.random::<f64>() >= self.cfg.prune_prob);
                 }
             }
@@ -553,7 +667,7 @@ impl Trainer {
             }
 
             if let Some(mut node) = self.nodes.get_mut(key) {
-                let floor = self.regret_floor();
+                let floor = self.regret_floor(weight, h.street());
                 for i in 0..acts.len() {
                     if explore[i] {
                         node.regret[i] =
@@ -608,7 +722,8 @@ impl Trainer {
                 }
                 None => sigma,
             };
-            if !(self.cfg.snapshot_avg && h.street() != Street::Preflop) {
+            let swept = self.cfg.preflop_sweep && h.street() == Street::Preflop;
+            if !swept && !(self.cfg.snapshot_avg && h.street() != Street::Preflop) {
                 if let Some(mut node) = self.nodes.get_mut(key) {
                     for (st, &d) in node.strat.iter_mut().zip(dist) {
                         *st += weight * d;
@@ -651,6 +766,13 @@ impl Trainer {
                         .enumerate()
                         .map(|(i, &d)| (1.0 - f) * d + if i == 0 { 0.0 } else { f * d / z })
                         .collect();
+                    let idx = sample_index(&q, rng);
+                    (idx, dist[idx] / q[idx])
+                }
+                _ if self.cfg.preflop_explore > 0.0 && h.street() == Street::Preflop => {
+                    let e = self.cfg.preflop_explore;
+                    let u = e / dist.len() as f64;
+                    let q: Vec<f64> = dist.iter().map(|&d| (1.0 - e) * d + u).collect();
                     let idx = sample_index(&q, rng);
                     (idx, dist[idx] / q[idx])
                 }
@@ -739,7 +861,7 @@ impl Trainer {
             node_util += sigma[b] * *u;
         }
         if let Some(mut node) = self.nodes.get_mut(&key) {
-            let floor = self.regret_floor();
+            let floor = self.regret_floor(weight, h.street());
             for (r, &u) in node.regret.iter_mut().zip(&utils) {
                 *r = (*r + weight * (u - node_util)).max(floor);
             }
@@ -764,7 +886,7 @@ impl Trainer {
             let p = h.to_act();
             let acts = lc.abs.abstract_actions(&h);
             let bucket = lc.abs.bucket(h.hole(p), h.board(), rng);
-            let mut probs: Vec<f64> = match lc.blueprint.get(bucket, &hist) {
+            let mut probs: Vec<f64> = match lc.strategies.get(bucket, &hist) {
                 Some(s) if s.len() == acts.len() => s.iter().map(|&x| x as f64).collect(),
                 _ => vec![1.0 / acts.len() as f64; acts.len()],
             };
@@ -799,6 +921,64 @@ impl Trainer {
             n += 1;
         }
         n
+    }
+
+    /// Add weight * (own reach) * (current strategy) into the average of
+    /// every preflop infoset, for every seat and starting hand. The action
+    /// tree preflop does not depend on the cards and a preflop bucket is
+    /// the hand class, so this enumerates each (seat, class) tree with the
+    /// seat's own reach and every other player's actions. Returns the
+    /// number of infosets updated.
+    pub fn sweep_preflop_average(&self, weight: f64) -> usize {
+        let n = self.cfg.hand.num_players;
+        let jobs: Vec<(usize, u16)> = (0..n).flat_map(|p| (0..169u16).map(move |b| (p, b))).collect();
+        jobs.par_iter()
+            .map(|&(p, b)| {
+                let h = Hand::new(&self.cfg.hand, 0, fresh_deck());
+                let mut hist = Vec::with_capacity(32);
+                self.sweep_node(&h, &mut hist, p, b, 1.0, weight)
+            })
+            .sum()
+    }
+
+    fn sweep_node(&self, h: &Hand, hist: &mut Vec<u8>, p: usize, b: u16, reach: f64, weight: f64) -> usize {
+        if h.is_terminal() || h.street() != Street::Preflop || h.folded(p) || h.all_in(p) {
+            return 0;
+        }
+        let acts = self.abs.abstract_actions(h);
+        let k = acts.len();
+        let mut sigma = [1.0 / k as f64; MAX_ACTS];
+        let mut updated = 0;
+        if h.to_act() == p {
+            let key = make_key(b, hist);
+            if let Some(mut node) = self.nodes.get_mut(&key) {
+                regret_matching_into(&node.regret, &mut sigma[..k]);
+                for (st, &s) in node.strat.iter_mut().zip(&sigma[..k]) {
+                    *st += weight * reach * s;
+                }
+                updated = 1;
+            }
+        }
+        for (i, &a) in acts.iter().enumerate() {
+            let r = if h.to_act() == p { reach * sigma[i] } else { reach };
+            if r <= 0.0 {
+                continue;
+            }
+            let mut child = h.clone();
+            child.apply(self.abs.concrete(h, a));
+            hist.push(a.token());
+            updated += self.sweep_node(&child, hist, p, b, r, weight);
+            hist.pop();
+        }
+        updated
+    }
+
+    /// Current (regret-matching) strategy for an infoset, if visited.
+    pub fn current_strategy(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f64>> {
+        let node = self.nodes.get(&make_key(bucket, hist))?;
+        let mut s = Vec::new();
+        regret_matching(&node.regret, &mut s);
+        Some(s)
     }
 
     /// Normalized average strategy for an infoset, if visited.
@@ -1322,6 +1502,71 @@ mod tests {
         let shove_hist = [AbsAction::AllIn.token()];
         let aa_call = t.avg_strategy(aa, &shove_hist).expect("AA-vs-shove visited");
         assert!(aa_call[1] > 0.8, "AA should call a shove, got {:.3}", aa_call[1]);
+        let btn_aa = t.avg_strategy(aa, &[]).expect("root AA visited");
+        assert!(btn_aa[0] < 0.1, "button must not fold AA, got {:.3}", btn_aa[0]);
+    }
+
+    /// A floor and a pruning threshold that scale with the linear weight
+    /// change how much negative regret is remembered, not what is learned:
+    /// the push/fold fixed point must hold.
+    #[test]
+    fn per_weight_floor_keeps_the_fixed_point() {
+        let mut t = push_fold_trainer();
+        t.cfg.prune_after = 1_000;
+        t.cfg.floor_per_weight = Some(3.0e8);
+        t.cfg.prune_per_weight = Some(1.5e3);
+        assert_eq!(t.regret_floor(10.0, Street::Flop), -3.0e9);
+        assert_eq!(t.prune_threshold(10.0), -1.5e4);
+        run_on_one_thread(&t, 60_000);
+        let aa = preflop_bucket([make_card(12, 0), make_card(12, 1)]);
+        let shove_hist = [AbsAction::AllIn.token()];
+        let aa_call = t.avg_strategy(aa, &shove_hist).expect("AA-vs-shove visited");
+        assert!(aa_call[1] > 0.8, "AA should call a shove, got {:.3}", aa_call[1]);
+        let junk = preflop_bucket([make_card(0, 0), make_card(5, 1)]);
+        let junk_call = t.avg_strategy(junk, &shove_hist).expect("junk-vs-shove visited");
+        assert!(junk_call[1] < 0.2, "72o must fold to a shove, got {:.3}", junk_call[1]);
+        let btn_aa = t.avg_strategy(aa, &[]).expect("root AA visited");
+        assert!(btn_aa[0] < 0.1, "button must not fold AA, got {:.3}", btn_aa[0]);
+    }
+
+    /// Swept preflop averaging weights by own reach only; the push/fold
+    /// fixed point must hold with it.
+    #[test]
+    fn preflop_sweep_keeps_the_fixed_point() {
+        let mut t = push_fold_trainer();
+        t.cfg.preflop_sweep = true;
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        pool.install(|| {
+            for c in 0..80u64 {
+                t.run(1_000, &|_| {});
+                assert!(t.sweep_preflop_average(((c + 1) * 1_000) as f64) > 0);
+            }
+        });
+        let aa = preflop_bucket([make_card(12, 0), make_card(12, 1)]);
+        let shove_hist = [AbsAction::AllIn.token()];
+        let aa_call = t.avg_strategy(aa, &shove_hist).expect("AA-vs-shove swept");
+        assert!(aa_call[1] > 0.8, "AA should call a shove, got {:.3}", aa_call[1]);
+        let junk = preflop_bucket([make_card(0, 0), make_card(5, 1)]);
+        let junk_call = t.avg_strategy(junk, &shove_hist).expect("junk-vs-shove swept");
+        assert!(junk_call[1] < 0.2, "72o must fold to a shove, got {:.3}", junk_call[1]);
+        let btn_aa = t.avg_strategy(aa, &[]).expect("root AA swept");
+        assert!(btn_aa[0] < 0.1, "button must not fold AA, got {:.3}", btn_aa[0]);
+    }
+
+    /// Preflop exploration is importance-weighted, so it must keep the
+    /// push/fold fixed point.
+    #[test]
+    fn preflop_explore_keeps_the_fixed_point() {
+        let mut t = push_fold_trainer();
+        t.cfg.preflop_explore = 0.3;
+        run_on_one_thread(&t, 120_000);
+        let aa = preflop_bucket([make_card(12, 0), make_card(12, 1)]);
+        let shove_hist = [AbsAction::AllIn.token()];
+        let aa_call = t.avg_strategy(aa, &shove_hist).expect("AA-vs-shove visited");
+        assert!(aa_call[1] > 0.8, "AA should call a shove, got {:.3}", aa_call[1]);
+        let junk = preflop_bucket([make_card(0, 0), make_card(5, 1)]);
+        let junk_call = t.avg_strategy(junk, &shove_hist).expect("junk-vs-shove visited");
+        assert!(junk_call[1] < 0.2, "72o must fold to a shove, got {:.3}", junk_call[1]);
         let btn_aa = t.avg_strategy(aa, &[]).expect("root AA visited");
         assert!(btn_aa[0] < 0.1, "button must not fold AA, got {:.3}", btn_aa[0]);
     }

@@ -128,7 +128,7 @@ pub fn collect(policy: &Policy, cfg: &HandConfig, dcfg: &DistillCfg) -> (Records
                     }
                 }
                 let a = acts[crate::cfr::sample_index(&probs, &mut rng)];
-                tracker.observe(p, a, &table.shadow, &table.hist, &policy.blueprint, &policy.abs);
+                tracker.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
                 let street_before = table.real.street();
                 table.apply_abs(a, &policy.abs);
                 if table.real.street() != street_before {

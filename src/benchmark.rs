@@ -251,7 +251,7 @@ pub fn replay_hand(
             let bucket = policy
                 .abs
                 .bucket(table.shadow.hole(seat), table.shadow.board(), &mut rng);
-            let strat = policy.blueprint.get(bucket, &table.hist);
+            let strat = policy.strategies.get(bucket, &table.hist);
             let (prob, top1) = match (idx, strat) {
                 (Some(i), Some(s)) if s.len() == acts.len() => {
                     let argmax = s

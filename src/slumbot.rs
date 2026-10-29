@@ -362,7 +362,7 @@ impl HandState {
                     abs_a,
                     &self.table.shadow,
                     &self.table.hist,
-                    &policy.blueprint,
+                    &*policy.strategies,
                     &policy.abs,
                 );
             }
