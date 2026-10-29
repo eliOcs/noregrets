@@ -9,7 +9,7 @@
 //! CFR+ solver in `river.rs`; everything else solves to the end of the hand
 //! with MCCFR.
 
-use crate::abstraction::{AbsAction, AbsConfig, Abstraction};
+use crate::abstraction::{AbsAction, AbsConfig, Abstraction, BetSize};
 use crate::cfr::{sample_index, Blueprint, LeafCfg, Spine, TrainConfig, Trainer};
 use crate::engine::{Hand, PlayerAction, Street};
 use crate::mirror::Strategies;
@@ -115,11 +115,11 @@ fn note_menu_mismatch(stored: usize, menu: usize) {
 /// Bet sizes used by the value-net flop solver (33%, 75%, 150% + all-in):
 /// richer than the turn solver's data-generation menu, still small enough
 /// to keep leaf-refresh network queries affordable.
-const FLOP_MENU: [u8; 3] = [1, 3, 5];
+const FLOP_MENU: [BetSize; 3] = [BetSize::P33, BetSize::P75, BetSize::P150];
 /// Bet-size menu for exact turn resolves at the table (75% pot + all-in,
 /// matching the value net's training menu): full menus put the turn+river
 /// vector tree at tens of GB.
-const TURN_MENU: [u8; 1] = [3];
+const TURN_MENU: [BetSize; 1] = [BetSize::P75];
 /// Turn cards sampled per leaf refresh (of 49) — bounds net queries per
 /// refresh at real-time budgets.
 const FLOP_QUERY_TURNS: usize = 16;
@@ -1338,7 +1338,7 @@ mod tests {
         // by the opponent's own actions (continual resolving). A villain
         // check and a villain bet ahead of us must both still match, and
         // must return the same entry values as the unled lookup.
-        for tok in [AbsAction::CheckCall.token(), AbsAction::Bet(3).token()] {
+        for tok in [AbsAction::CheckCall.token(), AbsAction::Bet(BetSize::P75).token()] {
             let mut led = table.hist.clone();
             led.push(tok);
             let led_alt = session

@@ -1258,7 +1258,7 @@ mod tests {
         let acts = [
             AbsAction::Fold,
             AbsAction::CheckCall,
-            AbsAction::Bet(2),
+            AbsAction::Bet(crate::abstraction::BetSize::P50),
             AbsAction::AllIn,
         ];
         let base = [0.25f64, 0.25, 0.25, 0.25];

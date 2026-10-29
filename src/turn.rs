@@ -15,7 +15,7 @@
 //! per-combo expected chip values, the training targets for the belief-state
 //! value network.
 
-use crate::abstraction::{AbsAction, Abstraction};
+use crate::abstraction::{AbsAction, Abstraction, BetSize};
 use crate::cards::Card;
 use crate::engine::{Hand, Street};
 use crate::eval::eval_hole_board;
@@ -130,7 +130,7 @@ impl TurnSolver {
         h: &Hand,
         abs: &Abstraction,
         ranges: [&[f64]; 2],
-        keep: &[u8],
+        keep: &[BetSize],
     ) -> Option<TurnSolver> {
         if h.street() != Street::Turn || h.is_terminal() || h.live_count() != 2 {
             return None;
@@ -212,7 +212,7 @@ impl TurnSolver {
     }
 
     /// Slim action menu: the abstraction's menu with only `keep` bet sizes.
-    fn menu(abs: &Abstraction, h: &Hand, keep: &[u8]) -> Vec<AbsAction> {
+    fn menu(abs: &Abstraction, h: &Hand, keep: &[BetSize]) -> Vec<AbsAction> {
         abs.abstract_actions(h)
             .into_iter()
             .filter(|a| match a {
@@ -241,7 +241,7 @@ impl TurnSolver {
         h: Hand,
         abs: &Abstraction,
         seats: [usize; 2],
-        keep: &[u8],
+        keep: &[BetSize],
         river_ix: Option<usize>,
         path: Vec<u8>,
     ) -> Kid {
@@ -763,7 +763,7 @@ mod tests {
     fn builds_a_multi_street_tree() {
         let (h, abs) = turn_p1_to_act();
         let uni = vec![1.0; NUM_COMBOS];
-        let s = TurnSolver::build(&h, &abs, [&uni, &uni], &[3]).unwrap();
+        let s = TurnSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75]).unwrap();
         // Must contain river subtrees under chance nodes: far more nodes
         // than a single-street tree, and at least one chance node with one
         // branch per unseen river card.
@@ -777,7 +777,7 @@ mod tests {
     fn root_strategies_are_normalized() {
         let (h, abs) = turn_p1_to_act();
         let uni = vec![1.0; NUM_COMBOS];
-        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[3]).unwrap();
+        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75]).unwrap();
         s.solve(30, 60_000);
         assert!(s.iterations() >= 5, "too slow: {} iters", s.iterations());
         let mut checked = 0;
@@ -800,7 +800,7 @@ mod tests {
     fn made_royal_calls_shove_and_values_full_pot() {
         let (h, abs) = turn_facing_shove();
         let uni = vec![1.0; NUM_COMBOS];
-        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[3]).unwrap();
+        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75]).unwrap();
         s.solve(60, 60_000);
 
         let nuts = parse_cards("As Ks").unwrap();
@@ -842,7 +842,7 @@ mod tests {
         let paid_ci = combo_index(paid[0], paid[1]);
         let mut alt = vec![-200.0; NUM_COMBOS];
         alt[paid_ci] = 5_000.0;
-        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[3])
+        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75])
             .unwrap()
             .with_gadget(alt);
         s.solve(60, 60_000);
@@ -866,7 +866,7 @@ mod tests {
     fn carry_exposes_river_entry_cfvs_by_line() {
         let (h, abs) = turn_p1_to_act();
         let uni = vec![1.0; NUM_COMBOS];
-        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[3]).unwrap();
+        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75]).unwrap();
         s.solve(40, 60_000);
         let carry = s.extract_carry();
 
@@ -901,7 +901,7 @@ mod tests {
     fn root_values_are_zero_sum() {
         let (h, abs) = turn_p1_to_act();
         let uni = vec![1.0; NUM_COMBOS];
-        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[3]).unwrap();
+        let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75]).unwrap();
         s.solve(40, 60_000);
         let (mut e0, mut e1, mut w0, mut w1) = (0.0, 0.0, 0.0, 0.0);
         let (v0, v1) = (s.root_values(0), s.root_values(1));

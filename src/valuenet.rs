@@ -15,6 +15,7 @@
 //! This net is the leaf evaluator for depth-limited flop solving: an
 //! end-of-flop leaf is exactly a turn street-start public state.
 
+use crate::abstraction::BetSize;
 use crate::bot::Policy;
 use crate::cards::{fresh_deck, Card};
 use crate::engine::{HandConfig, Street};
@@ -33,7 +34,7 @@ pub const OUTPUT_DIM: usize = 2 * NUM_COMBOS;
 
 /// Bet-size menu (indices into BET_SIZES) used for exact turn solves —
 /// 75% pot plus all-in keeps the turn+river tree ~100MB.
-pub const SOLVE_MENU: [u8; 1] = [3];
+pub const SOLVE_MENU: [BetSize; 1] = [BetSize::P75];
 
 #[derive(Serialize, Deserialize)]
 pub struct TurnSample {

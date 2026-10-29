@@ -15,7 +15,7 @@
 //! CO, BTN, SB, BB. Tokens: `f` fold, `c` check/call, `rN` the menu's
 //! raise to BET_SIZES[N] of the pot, `a` all-in.
 
-use crate::abstraction::{AbsAction, Abstraction, TOKEN_STREET_SEP, BET_SIZES};
+use crate::abstraction::{AbsAction, Abstraction, BetSize, TOKEN_STREET_SEP};
 use crate::cards::{fresh_deck, Card, Rank, Suit};
 use crate::cfr::sample_index;
 use crate::engine::{Hand, HandConfig, Street};
@@ -47,7 +47,7 @@ pub fn parse_action(tok: &str) -> Result<AbsAction, String> {
         _ => tok
             .strip_prefix('r')
             .and_then(|n| n.parse::<u8>().ok())
-            .filter(|&n| (n as usize) < BET_SIZES.len())
+            .and_then(BetSize::new)
             .map(AbsAction::Bet)
             .ok_or_else(|| format!("bad action token '{tok}' (f, c, rN, a)")),
     }

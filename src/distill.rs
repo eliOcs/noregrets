@@ -231,18 +231,18 @@ mod tests {
     /// full blueprint menu by action identity.
     #[test]
     fn expand_dist_aligns_by_action_identity() {
-        use crate::abstraction::AbsAction::*;
-        let full = vec![Fold, CheckCall, Bet(2), Bet(3), Bet(4), AllIn];
-        let slim = vec![Fold, CheckCall, Bet(3), AllIn];
+        use crate::abstraction::{AbsAction::*, BetSize};
+        let full = vec![Fold, CheckCall, Bet(BetSize::P50), Bet(BetSize::P75), Bet(BetSize::POT), AllIn];
+        let slim = vec![Fold, CheckCall, Bet(BetSize::P75), AllIn];
         let d = expand_dist(&slim, &[0.1, 0.4, 0.3, 0.2], &full).unwrap();
         assert_eq!(d, vec![0.1, 0.4, 0.0, 0.3, 0.0, 0.2]);
 
         // Mass on actions the full menu lacks is dropped and renormalized.
-        let slim2 = vec![CheckCall, Bet(7)];
+        let slim2 = vec![CheckCall, Bet(BetSize::P300)];
         let d2 = expand_dist(&slim2, &[0.5, 0.5], &full).unwrap();
         assert!((d2[1] - 1.0).abs() < 1e-12);
         // No surviving mass → None.
-        assert!(expand_dist(&[Bet(7)], &[1.0], &full).is_none());
+        assert!(expand_dist(&[Bet(BetSize::P300)], &[1.0], &full).is_none());
     }
 
     /// End to end on a tiny blueprint: collection records searched postflop

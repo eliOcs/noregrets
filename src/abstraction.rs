@@ -18,6 +18,39 @@ use std::sync::Arc;
 /// Pot-fraction bet sizes, in percent of (pot + amount to call).
 pub const BET_SIZES: [u16; 8] = [25, 33, 50, 75, 100, 150, 200, 300];
 
+/// One of the `BET_SIZES`. Only the sizes in the table can be built, so a
+/// bet never indexes past it, and its history token stays below
+/// `TOKEN_LEAF`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BetSize(u8);
+
+impl BetSize {
+    pub const P25: BetSize = BetSize(0);
+    pub const P33: BetSize = BetSize(1);
+    pub const P50: BetSize = BetSize(2);
+    pub const P75: BetSize = BetSize(3);
+    pub const POT: BetSize = BetSize(4);
+    pub const P150: BetSize = BetSize(5);
+    pub const P200: BetSize = BetSize(6);
+    #[allow(dead_code)] // in no menu; probes reach it as "r7"
+    pub const P300: BetSize = BetSize(7);
+
+    /// The size at this index into `BET_SIZES`, if there is one.
+    pub fn new(index: u8) -> Option<BetSize> {
+        ((index as usize) < BET_SIZES.len()).then_some(BetSize(index))
+    }
+
+    /// Index into `BET_SIZES`.
+    pub fn index(self) -> u8 {
+        self.0
+    }
+
+    /// Percent of (pot + amount to call).
+    pub fn pct(self) -> u16 {
+        BET_SIZES[self.0 as usize]
+    }
+}
+
 /// History tokens are u8: Fold=0, CheckCall=1, AllIn=2, Bet(i)=3+i, street separator=15.
 pub const TOKEN_STREET_SEP: u8 = 15;
 /// Key suffix marking a depth-limit leaf's continuation-strategy infoset.
@@ -27,8 +60,7 @@ pub const TOKEN_LEAF: u8 = 14;
 pub enum AbsAction {
     Fold,
     CheckCall,
-    /// Index into BET_SIZES.
-    Bet(u8),
+    Bet(BetSize),
     AllIn,
 }
 
@@ -38,7 +70,7 @@ impl AbsAction {
             AbsAction::Fold => 0,
             AbsAction::CheckCall => 1,
             AbsAction::AllIn => 2,
-            AbsAction::Bet(i) => 3 + i,
+            AbsAction::Bet(size) => 3 + size.index(),
         }
     }
 }
@@ -471,36 +503,37 @@ impl Abstraction {
     /// menus span a small (25-33%) bet through overbets so the blueprint can
     /// represent modern sizing, with progressively pruned raise/re-raise menus
     /// to bound the tree.
-    pub fn bet_menu(&self, street: Street, n_raises: u8) -> &'static [u8] {
+    pub fn bet_menu(&self, street: Street, n_raises: u8) -> &'static [BetSize] {
+        type B = BetSize;
         match (self.cfg.menu, street, n_raises) {
             // Preflop: Wide and Pluribus share the 2026-07 preflop menu.
-            (MenuShape::Wide | MenuShape::Pluribus, Street::Preflop, 0) => &[1, 2, 3, 4],
-            (MenuShape::Wide | MenuShape::Pluribus, Street::Preflop, 1) => &[2, 4, 6],
-            (MenuShape::Wide | MenuShape::Pluribus, Street::Preflop, 2) => &[4, 6],
+            (MenuShape::Wide | MenuShape::Pluribus, Street::Preflop, 0) => &[B::P33, B::P50, B::P75, B::POT],
+            (MenuShape::Wide | MenuShape::Pluribus, Street::Preflop, 1) => &[B::P50, B::POT, B::P200],
+            (MenuShape::Wide | MenuShape::Pluribus, Street::Preflop, 2) => &[B::POT, B::P200],
             (MenuShape::Wide | MenuShape::Pluribus, Street::Preflop, _) => &[],
             // Fine preflop: 7 opens (1.6x..6x), 5 three-bets, 3 four-bets.
-            (MenuShape::PluribusFinePre, Street::Preflop, 0) => &[0, 1, 2, 3, 4, 5, 6],
-            (MenuShape::PluribusFinePre, Street::Preflop, 1) => &[1, 2, 3, 4, 6],
-            (MenuShape::PluribusFinePre, Street::Preflop, 2) => &[2, 4, 6],
-            (MenuShape::PluribusFinePre, Street::Preflop, _) => &[4],
+            (MenuShape::PluribusFinePre, Street::Preflop, 0) => &[B::P25, B::P33, B::P50, B::P75, B::POT, B::P150, B::P200],
+            (MenuShape::PluribusFinePre, Street::Preflop, 1) => &[B::P33, B::P50, B::P75, B::POT, B::P200],
+            (MenuShape::PluribusFinePre, Street::Preflop, 2) => &[B::P50, B::POT, B::P200],
+            (MenuShape::PluribusFinePre, Street::Preflop, _) => &[B::POT],
             // Wide postflop: 25..200% first-in, 4-size raises, 2-size re-raises.
-            (MenuShape::Wide, Street::Flop, 0) => &[0, 1, 2, 3, 4, 5, 6],
-            (MenuShape::Wide, _, 0) => &[1, 2, 3, 4, 5, 6],
-            (MenuShape::Wide, _, 1) => &[2, 3, 4, 6],
-            (MenuShape::Wide, _, 2) => &[4, 6],
+            (MenuShape::Wide, Street::Flop, 0) => &[B::P25, B::P33, B::P50, B::P75, B::POT, B::P150, B::P200],
+            (MenuShape::Wide, _, 0) => &[B::P33, B::P50, B::P75, B::POT, B::P150, B::P200],
+            (MenuShape::Wide, _, 1) => &[B::P50, B::P75, B::POT, B::P200],
+            (MenuShape::Wide, _, 2) => &[B::POT, B::P200],
             (MenuShape::Wide, _, _) => &[],
             // Pluribus postflop: 50%/100% (+ all-in) first-in, pot (+ all-in)
             // raise, call/fold/all-in beyond.
-            (_, _, 0) => &[2, 4],
-            (_, _, 1) => &[4],
+            (_, _, 0) => &[B::P50, B::POT],
+            (_, _, 1) => &[B::POT],
             (_, _, _) => &[],
         }
     }
 
     /// Raise-to amount for a pot-fraction bet: current bet plus a fraction of
     /// the pot as it would be after calling.
-    fn bet_target(h: &Hand, size_idx: u8) -> u32 {
-        let pct = BET_SIZES[size_idx as usize] as u64;
+    fn bet_target(h: &Hand, size: BetSize) -> u32 {
+        let pct = size.pct() as u64;
         let pot_after_call = (h.pot() + h.to_call()) as u64;
         h.current_bet() + (pot_after_call * pct / 100) as u32
     }
@@ -1405,10 +1438,10 @@ mod tests {
         assert!(bets(&wide, &h) >= 5);
         // Facing a flop bet: one raise size under Pluribus, none after that.
         let mut h2 = h.clone();
-        h2.apply(plu.concrete(&h2, AbsAction::Bet(4)));
+        h2.apply(plu.concrete(&h2, AbsAction::Bet(BetSize::POT)));
         assert_eq!(bets(&plu, &h2), 1, "Pluribus raise: pot only");
         let mut h3 = h2.clone();
-        h3.apply(plu.concrete(&h3, AbsAction::Bet(4)));
+        h3.apply(plu.concrete(&h3, AbsAction::Bet(BetSize::POT)));
         assert_eq!(bets(&plu, &h3), 0, "Pluribus re-raise: call/fold/all-in");
         // Preflop open: fine menu strictly more sizes than the shared one.
         let root = Hand::new(&cfg, 0, crate::cards::fresh_deck());
@@ -1484,12 +1517,12 @@ mod tests {
         let h = h6();
         // UTG: pot 150, to_call 100 -> pot-after-call 250 -> raise to 100+250=350.
         assert_eq!(
-            a.concrete(&h, AbsAction::Bet(4)),
+            a.concrete(&h, AbsAction::Bet(BetSize::POT)),
             PlayerAction::RaiseTo(350)
         );
         // Half-pot open: 100 + 125 = 225.
         assert_eq!(
-            a.concrete(&h, AbsAction::Bet(2)),
+            a.concrete(&h, AbsAction::Bet(BetSize::P50)),
             PlayerAction::RaiseTo(225)
         );
         assert_eq!(a.concrete(&h, AbsAction::AllIn), PlayerAction::RaiseTo(10_000));
@@ -1520,9 +1553,9 @@ mod tests {
         let a = abs();
         let h = h6();
         // Abstract raises available: 182, 225, 287, 350 and 10_000 (all-in).
-        assert_eq!(a.map_raise(&h, 360), AbsAction::Bet(4));
+        assert_eq!(a.map_raise(&h, 360), AbsAction::Bet(BetSize::POT));
         // 200 is nearer 182 (33% open) than 225 (50%) in log space.
-        assert_eq!(a.map_raise(&h, 200), AbsAction::Bet(1));
+        assert_eq!(a.map_raise(&h, 200), AbsAction::Bet(BetSize::P33));
         assert_eq!(a.map_raise(&h, 9_000), AbsAction::AllIn);
     }
 

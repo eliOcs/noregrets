@@ -12,7 +12,7 @@
 //! Fold terminals are exact; all-in-on-the-flop showdowns are evaluated on
 //! a fixed sample of full runouts with the shared O(N) sweep.
 
-use crate::abstraction::{AbsAction, Abstraction};
+use crate::abstraction::{AbsAction, Abstraction, BetSize};
 use crate::cards::Card;
 use crate::engine::{Hand, Street};
 use crate::eval::eval_hole_board;
@@ -127,7 +127,7 @@ impl<'a> FlopSolver<'a> {
         h: &Hand,
         abs: &Abstraction,
         ranges: [&[f64]; 2],
-        keep: &[u8],
+        keep: &[BetSize],
         eval: &'a dyn LeafEval,
         refresh: u64,
     ) -> Option<FlopSolver<'a>> {
@@ -143,7 +143,7 @@ impl<'a> FlopSolver<'a> {
         h: &Hand,
         abs: &Abstraction,
         ranges: [&[f64]; 2],
-        keep: &[u8],
+        keep: &[BetSize],
         eval: &'a dyn LeafEval,
         refresh: u64,
         max_query_turns: usize,
@@ -220,7 +220,7 @@ impl<'a> FlopSolver<'a> {
         Some(solver)
     }
 
-    fn expand(&mut self, h: Hand, abs: &Abstraction, seats: [usize; 2], keep: &[u8]) -> Kid {
+    fn expand(&mut self, h: Hand, abs: &Abstraction, seats: [usize; 2], keep: &[BetSize]) -> Kid {
         if h.is_terminal() {
             if h.live_count() == 1 {
                 let u = h.utilities();
@@ -828,7 +828,7 @@ mod tests {
         let (h, abs) = flop_p1_to_act();
         let uni = vec![1.0; NUM_COMBOS];
         let oracle = EquityOracle;
-        let s = FlopSolver::build(&h, &abs, [&uni, &uni], &[3], &oracle, 10).unwrap();
+        let s = FlopSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75], &oracle, 10).unwrap();
         assert!(s.node_count() > 3);
         assert!(s.leaf_count() > 0, "must have depth-limit leaves");
         assert_eq!(s.turns.len(), 49);
@@ -844,7 +844,7 @@ mod tests {
         let (h, abs) = flop_p1_to_act();
         let uni = vec![1.0; NUM_COMBOS];
         let oracle = EquityOracle;
-        let mut s = FlopSolver::build(&h, &abs, [&uni, &uni], &[3], &oracle, 10).unwrap();
+        let mut s = FlopSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75], &oracle, 10).unwrap();
         s.solve(25, 120_000);
         assert!(s.iterations() >= 25);
         let mut checked = 0;
@@ -866,7 +866,7 @@ mod tests {
         let uni = vec![1.0; NUM_COMBOS];
         let oracle = EquityOracle;
         let mut s =
-            FlopSolver::build_sampled(&h, &abs, [&uni, &uni], &[3], &oracle, 10, 12).unwrap();
+            FlopSolver::build_sampled(&h, &abs, [&uni, &uni], &[BetSize::P75], &oracle, 10, 12).unwrap();
         assert_eq!(s.query_turns.len(), 12);
         s.solve(15, 120_000);
         let mut checked = 0;
@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(h.to_act(), 0);
         let uni = vec![1.0; NUM_COMBOS];
         let oracle = EquityOracle;
-        let mut s = FlopSolver::build(&h, &abs, [&uni, &uni], &[3], &oracle, 10).unwrap();
+        let mut s = FlopSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75], &oracle, 10).unwrap();
         s.solve(120, 120_000);
         let nuts = parse_cards("As Ks").unwrap();
         let (acts, p) = s.root_strategy([nuts[0], nuts[1]]).unwrap();
