@@ -2,24 +2,56 @@
 //!
 //! `eval7` returns a u32 where a higher value is a strictly better hand.
 //! Encoding: category << 20 | up to five 4-bit rank values, most significant first.
-//! Categories: 0 high card, 1 pair, 2 two pair, 3 trips, 4 straight,
-//! 5 flush, 6 full house, 7 quads, 8 straight flush.
 
 use crate::cards::Card;
 
-pub const CAT_HIGH: u32 = 0;
-pub const CAT_PAIR: u32 = 1;
-pub const CAT_TWO_PAIR: u32 = 2;
-pub const CAT_TRIPS: u32 = 3;
-pub const CAT_STRAIGHT: u32 = 4;
-pub const CAT_FLUSH: u32 = 5;
-pub const CAT_FULL_HOUSE: u32 = 6;
-pub const CAT_QUADS: u32 = 7;
-pub const CAT_STRAIGHT_FLUSH: u32 = 8;
+/// The category of a made hand, weakest first; the discriminant is the
+/// value's top bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Category {
+    HighCard = 0,
+    Pair = 1,
+    TwoPair = 2,
+    Trips = 3,
+    Straight = 4,
+    Flush = 5,
+    FullHouse = 6,
+    Quads = 7,
+    StraightFlush = 8,
+}
+
+impl Category {
+    const ALL: [Category; 9] = [
+        Category::HighCard,
+        Category::Pair,
+        Category::TwoPair,
+        Category::Trips,
+        Category::Straight,
+        Category::Flush,
+        Category::FullHouse,
+        Category::Quads,
+        Category::StraightFlush,
+    ];
+
+    #[allow(dead_code)]
+    pub fn name(self) -> &'static str {
+        match self {
+            Category::HighCard => "High Card",
+            Category::Pair => "Pair",
+            Category::TwoPair => "Two Pair",
+            Category::Trips => "Three of a Kind",
+            Category::Straight => "Straight",
+            Category::Flush => "Flush",
+            Category::FullHouse => "Full House",
+            Category::Quads => "Four of a Kind",
+            Category::StraightFlush => "Straight Flush",
+        }
+    }
+}
 
 #[inline(always)]
-fn pack(cat: u32, ranks: &[u32]) -> u32 {
-    let mut v = cat << 20;
+fn pack(cat: Category, ranks: &[u32]) -> u32 {
+    let mut v = (cat as u32) << 20;
     let mut shift = 16;
     for &r in ranks {
         v |= r << shift;
@@ -76,11 +108,11 @@ pub fn eval7(cards: &[Card; 7]) -> u32 {
     for sm in suit_masks {
         if sm.count_ones() >= 5 {
             if let Some(h) = straight_high(sm) {
-                return pack(CAT_STRAIGHT_FLUSH, &[h]);
+                return pack(Category::StraightFlush, &[h]);
             }
             let mut tops = [0u32; 5];
             top_ranks(sm, 5, &mut tops);
-            return pack(CAT_FLUSH, &tops);
+            return pack(Category::Flush, &tops);
         }
     }
 
@@ -121,7 +153,7 @@ pub fn eval7(cards: &[Card; 7]) -> u32 {
         let kicker_mask = rank_mask & !(1u16 << quad);
         let mut tops = [0u32; 5];
         top_ranks(kicker_mask, 1, &mut tops);
-        return pack(CAT_QUADS, &[quad as u32, tops[0]]);
+        return pack(Category::Quads, &[quad as u32, tops[0]]);
     }
 
     // Full house: trips + (second trips as pair, or best pair)
@@ -132,38 +164,38 @@ pub fn eval7(cards: &[Card; 7]) -> u32 {
             pair_hi
         };
         if pair_part >= 0 {
-            return pack(CAT_FULL_HOUSE, &[trips_hi as u32, pair_part as u32]);
+            return pack(Category::FullHouse, &[trips_hi as u32, pair_part as u32]);
         }
     }
 
     if let Some(h) = straight_high(rank_mask) {
-        return pack(CAT_STRAIGHT, &[h]);
+        return pack(Category::Straight, &[h]);
     }
 
     if trips_hi >= 0 {
         let kicker_mask = rank_mask & !(1u16 << trips_hi);
         let mut tops = [0u32; 5];
         top_ranks(kicker_mask, 2, &mut tops);
-        return pack(CAT_TRIPS, &[trips_hi as u32, tops[0], tops[1]]);
+        return pack(Category::Trips, &[trips_hi as u32, tops[0], tops[1]]);
     }
 
     if pair_hi >= 0 && pair_lo >= 0 {
         let kicker_mask = rank_mask & !(1u16 << pair_hi) & !(1u16 << pair_lo);
         let mut tops = [0u32; 5];
         top_ranks(kicker_mask, 1, &mut tops);
-        return pack(CAT_TWO_PAIR, &[pair_hi as u32, pair_lo as u32, tops[0]]);
+        return pack(Category::TwoPair, &[pair_hi as u32, pair_lo as u32, tops[0]]);
     }
 
     if pair_hi >= 0 {
         let kicker_mask = rank_mask & !(1u16 << pair_hi);
         let mut tops = [0u32; 5];
         top_ranks(kicker_mask, 3, &mut tops);
-        return pack(CAT_PAIR, &[pair_hi as u32, tops[0], tops[1], tops[2]]);
+        return pack(Category::Pair, &[pair_hi as u32, tops[0], tops[1], tops[2]]);
     }
 
     let mut tops = [0u32; 5];
     top_ranks(rank_mask, 5, &mut tops);
-    pack(CAT_HIGH, &tops)
+    pack(Category::HighCard, &tops)
 }
 
 /// Convenience: evaluate 2 hole cards + 3..5 board cards (pads via best-of available
@@ -176,24 +208,10 @@ pub fn eval_hole_board(hole: &[Card; 2], board: &[Card]) -> u32 {
     eval7(&cards)
 }
 
-pub fn category(value: u32) -> u32 {
-    value >> 20
-}
-
+/// The category of a value returned by `eval7`.
 #[allow(dead_code)]
-pub fn category_name(value: u32) -> &'static str {
-    match category(value) {
-        CAT_HIGH => "High Card",
-        CAT_PAIR => "Pair",
-        CAT_TWO_PAIR => "Two Pair",
-        CAT_TRIPS => "Three of a Kind",
-        CAT_STRAIGHT => "Straight",
-        CAT_FLUSH => "Flush",
-        CAT_FULL_HOUSE => "Full House",
-        CAT_QUADS => "Four of a Kind",
-        CAT_STRAIGHT_FLUSH => "Straight Flush",
-        _ => "?",
-    }
+pub fn category(value: u32) -> Category {
+    Category::ALL[(value >> 20) as usize]
 }
 
 // ---------------------------------------------------------------------------
@@ -214,18 +232,18 @@ mod tests {
 
     #[test]
     fn categories() {
-        assert_eq!(category(e("As Ks Qs Js Ts 2c 3d")), CAT_STRAIGHT_FLUSH);
-        assert_eq!(category(e("As 2s 3s 4s 5s Kc Kd")), CAT_STRAIGHT_FLUSH); // steel wheel
-        assert_eq!(category(e("Ac Ad Ah As Kc 2d 3h")), CAT_QUADS);
-        assert_eq!(category(e("Ac Ad Ah Kc Kd 2d 3h")), CAT_FULL_HOUSE);
-        assert_eq!(category(e("Ac Ad Ah Kc Kd Kh 3h")), CAT_FULL_HOUSE);
-        assert_eq!(category(e("As Ks 9s 5s 2s 3c 4d")), CAT_FLUSH);
-        assert_eq!(category(e("Ac Kd Qh Js Tc 2d 3h")), CAT_STRAIGHT);
-        assert_eq!(category(e("Ac 2d 3h 4s 5c Kd 9h")), CAT_STRAIGHT); // wheel
-        assert_eq!(category(e("Ac Ad Ah Kc Qd 2d 3h")), CAT_TRIPS);
-        assert_eq!(category(e("Ac Ad Kh Kc Qd 2d 3h")), CAT_TWO_PAIR);
-        assert_eq!(category(e("Ac Ad Kh Qc Jd 2d 3h")), CAT_PAIR);
-        assert_eq!(category(e("Ac Kd Qh Js 9c 2d 3h")), CAT_HIGH);
+        assert_eq!(category(e("As Ks Qs Js Ts 2c 3d")), Category::StraightFlush);
+        assert_eq!(category(e("As 2s 3s 4s 5s Kc Kd")), Category::StraightFlush); // steel wheel
+        assert_eq!(category(e("Ac Ad Ah As Kc 2d 3h")), Category::Quads);
+        assert_eq!(category(e("Ac Ad Ah Kc Kd 2d 3h")), Category::FullHouse);
+        assert_eq!(category(e("Ac Ad Ah Kc Kd Kh 3h")), Category::FullHouse);
+        assert_eq!(category(e("As Ks 9s 5s 2s 3c 4d")), Category::Flush);
+        assert_eq!(category(e("Ac Kd Qh Js Tc 2d 3h")), Category::Straight);
+        assert_eq!(category(e("Ac 2d 3h 4s 5c Kd 9h")), Category::Straight); // wheel
+        assert_eq!(category(e("Ac Ad Ah Kc Qd 2d 3h")), Category::Trips);
+        assert_eq!(category(e("Ac Ad Kh Kc Qd 2d 3h")), Category::TwoPair);
+        assert_eq!(category(e("Ac Ad Kh Qc Jd 2d 3h")), Category::Pair);
+        assert_eq!(category(e("Ac Kd Qh Js 9c 2d 3h")), Category::HighCard);
     }
 
     #[test]
