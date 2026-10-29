@@ -362,7 +362,13 @@ and at 120bb nothing measurable (BASELINES, 28 Oct 2026).
 `--search` re-solves postflop decisions online (`--search-ms`, default 75;
 `--search-iters`, default 20,000). Ranges are rebuilt from each request's
 actions, the solve is rooted at the current decision, and answers carry
-`"source":"search"`. Search reads strategies through the same store as
+`"source":"search"`. The ranges are widened, as in `play` and `slumbot`:
+every seat, the human included, is observed through the blueprint, but an
+action the blueprint rarely takes partly undoes the narrowing instead of
+collapsing the range onto the few combos that take it. Without widening a
+human's off-blueprint line left the exact river solver answering by
+blockers (88 folding a river pot bet 90% and never calling, ace-high air
+jamming or folding on its kicker; BASELINES, 29 Oct 2026). Search reads strategies through the same store as
 the blueprint answers, so compact blueprints stay memory-mapped.
 
 Search buckets every hand in each range, so it needs the flop/turn bucket
@@ -389,7 +395,9 @@ Measured through the probes at a 75 ms cap, this served set lowers the
 multiway bound by 268 ±120 mbb/hand against it-800m at 100bb and by 247
 ±119 against the native 80bb blueprint at 80bb, heads-up lower at both;
 through `serve` the p99 latency is 83 ms on a 12-core box (BASELINES,
-29 Oct 2026). `lbr` and `br` accept compact blueprints and overlays too,
+29 Oct 2026). Those gates are self-play: the probes face the blueprint
+itself, so they track ranges by hard Bayes, which is exact there, and
+never measured the widened ranges `serve` now uses against people. `lbr` and `br` accept compact blueprints and overlays too,
 and `--stack` to probe other depths.
 
 ### `benchmark`

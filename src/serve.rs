@@ -261,16 +261,7 @@ pub fn decide_with_search(bot: &Bot, cfg: &HandConfig, s: &Searcher, spot: &Spot
         return Ok(Decision { strategy: choices_json(choices), source });
     }
     let policy = &s.policy;
-    let mut tracker = RangeTracker::new(cfg.num_players.get());
-    let mut board = 0;
-    for o in mirror.log() {
-        if o.shadow.board().len() > board {
-            board = o.shadow.board().len();
-            tracker.exclude(o.shadow.board());
-        }
-        tracker.observe(o.seat, o.action, &o.shadow, &o.hist, &*policy.strategies, &policy.abs);
-    }
-    tracker.exclude(mirror.real.board());
+    let tracker = ranges(policy, &mirror, cfg.num_players.get());
     let mut rng = SmallRng::seed_from_u64(spot.id ^ 0x5EA2_C4ED);
     let (acts, probs) = policy.search_dist(
         &mirror.real,
@@ -287,6 +278,27 @@ pub fn decide_with_search(bot: &Bot, cfg: &HandConfig, s: &Searcher, spot: &Spot
     let probs: Vec<f64> = probs.iter().map(|p| p / total).collect();
     let choices = mirror.concrete(&policy.abs, &acts, &probs);
     Ok(Decision { strategy: choices_json(choices), source: Source::Search })
+}
+
+/// Every seat's range after the request's actions, observed through the
+/// blueprint. Widened: the table's other seats include a human, who is not
+/// known to play the blueprint, and hard Bayes collapses a human's off-model
+/// line onto a few combos that the exact river solve then answers to blocker
+/// by blocker. The bot seats are widened too until the protocol says which
+/// seats are bots. The near-hard weights the preflop all-in resolve reads
+/// are never widened.
+fn ranges(policy: &Policy, mirror: &Mirror, n: usize) -> RangeTracker {
+    let mut tracker = RangeTracker::new(n).with_widening();
+    let mut board = 0;
+    for o in mirror.log() {
+        if o.shadow.board().len() > board {
+            board = o.shadow.board().len();
+            tracker.exclude(o.shadow.board());
+        }
+        tracker.observe(o.seat, o.action, &o.shadow, &o.hist, &*policy.strategies, &policy.abs);
+    }
+    tracker.exclude(mirror.real.board());
+    tracker
 }
 
 fn choices_json(choices: Vec<(PlayerAction, f64)>) -> Vec<Choice> {
@@ -354,7 +366,7 @@ fn replay(bot: &Bot, cfg: &HandConfig, spot: &Spot, log: bool) -> Result<Mirror,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abstraction::{preflop_bucket, AbsConfig, Abstraction};
+    use crate::abstraction::{preflop_bucket, AbsAction, AbsConfig, Abstraction};
     use crate::cfr::{make_key, Blueprint, StrategyMap};
     use crate::engine::Hand;
     use std::sync::Arc;
@@ -617,6 +629,53 @@ mod tests {
         assert_eq!(m.log().len(), tokens);
         assert_eq!(m.log()[0].seat, UTG);
         assert!(m.log().iter().all(|o| o.shadow.street() == crate::engine::Street::Preflop));
+    }
+
+    /// A Pluton hand where v0.3.0's river answers swung on single blockers:
+    /// the big blind (seat 0, the human) raises a limp, check-raises the
+    /// flop and bets the pot on the river into 88. With a blueprint where
+    /// only aces make that preflop raise, hard Bayes would favour AhAd over
+    /// any other combo by the floor ratio of 50; serve's ranges must widen
+    /// instead.
+    #[test]
+    fn a_human_off_model_line_widens_its_range() {
+        let line = r#"{"id":1,"button":4,"stacks":[10000,10000,10000,10000,10000,10000],"seat":1,"hole":["8h","8c"],"board":["2c","As","6c","Ac","9d"],"actions":[{"type":"call"},{"type":"fold"},{"type":"fold"},{"type":"fold"},{"type":"fold"},{"type":"raise","to":300},{"type":"call"},{"type":"call"},{"type":"raise","to":600},{"type":"raise","to":2450},{"type":"call"},{"type":"call"},{"type":"call"},{"type":"raise","to":5550}]}"#;
+        let spot = read_request(line, Players::SIX).unwrap();
+        let (b, _) = searcher();
+        let m = replay(&b, &cfg(), &spot, true).unwrap();
+        let raise = m
+            .log()
+            .iter()
+            .find(|o| o.seat == 0 && o.shadow.street() == Street::Preflop)
+            .unwrap();
+        assert!(matches!(raise.action, AbsAction::Bet(_) | AbsAction::AllIn), "{:?}", raise.action);
+
+        let acts = b.abs.abstract_actions(&raise.shadow);
+        let raise_idx = acts.iter().position(|&a| a == raise.action).unwrap();
+        let check_idx = acts.iter().position(|&a| a == AbsAction::CheckCall).unwrap();
+        let hole = |s: &str| Hole::try_from([&s[..2], &s[2..]].map(|c| c.parse().unwrap())).unwrap();
+        let aces = preflop_bucket(*hole("AhAd"));
+        let mut strategies = StrategyMap::default();
+        for bucket in 0..169u16 {
+            let mut s = vec![0.0f32; acts.len()];
+            s[if bucket == aces { raise_idx } else { check_idx }] = 1.0;
+            strategies.insert(make_key(bucket, &raise.hist).to_vec(), s);
+        }
+        let bp = Blueprint {
+            strategies,
+            iterations: 1,
+            num_players: Players::SIX,
+            abs_cfg: AbsConfig::default(),
+            centroids: None,
+        };
+        let policy = Policy::new(bp, b.abs.clone());
+
+        let t = ranges(&policy, &m, 6);
+        let ratio = t.prob(0, hole("AhAd")) / t.prob(0, hole("KdQd"));
+        assert!(ratio > 1.5, "aces must still be favoured, got {ratio}");
+        assert!(ratio < 15.0, "the off-model raise must widen, not reach hard Bayes' 50: {ratio}");
+        // Cards on the board leave the range.
+        assert_eq!(t.prob(0, hole("AsKd")), 0.0);
     }
 
     #[test]

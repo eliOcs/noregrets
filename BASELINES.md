@@ -1893,3 +1893,52 @@ search (582 searched; one thread, 2,000 iterations, no time cap). At 75ms,
 300 hands each: p99 83.1ms against 83.7ms, multiway flop p50 31ms against
 27ms (one 119ms decision, the table's pages read cold), peak resident
 779 MB against 1,310 MB.
+
+### `serve --search` widens every seat's range (v0.3.1)
+
+Every search gate above is self-play: `lbr`, `br` and the latency runs
+face the blueprint itself, and their `RangeTracker` uses hard Bayes,
+which is exact against a literal blueprint player. `serve` built its
+ranges the same way, so on Pluton the human was modelled as a blueprint
+player too. A line the blueprint rarely plays collapsed the human's range
+onto a few combos, and the exact two-player river solve then answered by
+blockers. `serve` now calls `with_widening()`, as `play` and `slumbot`
+already did. Against Slumbot, search with hard-Bayes beliefs lost
+−1,649 mbb/hand, blueprint-only −719 and safe search with widened beliefs
+−894 ("Stage 0+1a" above, July). Every seat is widened, since the protocol does not
+say which seat is the human. The preflop all-in resolve reads the
+near-hard weights, which are never widened, so it is unchanged.
+
+The Pluton hand: button 4, seat 1 limps, the big blind raises to 300 and
+check-raises the flop (600, 2,450) on 2c As 6c, both check the turn Ac,
+and the big blind bets the pot (5,550, leaving 1,700) on the river 9d.
+Seat 1's answer from `serve --blueprint it-800m-r.nrc --search`, 75 ms:
+
+| Seat 1 holds | hard Bayes (fold / call / jam) | widened |
+|---|---|---|
+| 8h8c | 90 / 0 / 10% | 0 / 66 / 34% |
+| 7h7d | 0 / 0 / 100% | 0 / 0 / 100% |
+| QhQd | 0 / 92 / 8% | 0 / 100 / 0% |
+| 9h9s (full house) | jam 100% | jam 100% |
+| Kd7d | 0 / 0 / 100% | 100 / 0 / 0% |
+| KdJd | 100 / 0 / 0% | 100 / 0 / 0% |
+| KhQh | 24 / 0 / 77% | 10 / 0 / 90% |
+| JhTh, 5h4h | fold 100%, jam 100% | fold 100%, fold 100% |
+| 8h8c on the turn, facing a check | check 66% | check 94% |
+
+Most air now folds instead of jamming or folding on its kicker. Oddities
+remain: 77 jams while 88 mostly calls, and KhQh jams 90%. Unit test
+`a_human_off_model_line_widens_its_range` replays this request against a
+blueprint where only aces make the big blind's raise: the widened ratio
+AhAd : KdQd is about 11, against 50 under hard Bayes, which fails it.
+
+Blueprint-only `serve` is unaffected: 7,950 decisions from 1,000
+self-played hands are byte-identical to the unwidened build. Latency through
+`serve --search` (`selfplay_latency.py`, 500 hands at 100bb, 12-core dev
+box, musl build): p99 83.3 ms, max 89 ms, against 83.4 ms and 111 ms
+unwidened over 4,017 requests.
+
+Not measured: the bounds with widened ranges. `lbr` and `br` still
+track by hard Bayes, so the multiway gate (−268 ±120) was measured with
+beliefs `serve` no longer uses. Widening against a field that does play the
+blueprint should cost a little. Against people it is the right model.
