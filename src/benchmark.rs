@@ -17,6 +17,7 @@ use crate::table::Table;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rayon::prelude::*;
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub struct PhhHand {
@@ -27,48 +28,49 @@ pub struct PhhHand {
     pub finishing: Vec<i64>,
 }
 
-/// Parse one .phh file (TOML).
-pub fn parse_phh(text: &str) -> Option<PhhHand> {
-    let doc: toml::Table = text.parse().ok()?;
-    let arr_u32 = |k: &str| -> Option<Vec<u32>> {
-        doc.get(k)?
-            .as_array()?
-            .iter()
-            .map(|v| v.as_integer().and_then(|x| u32::try_from(x).ok()))
-            .collect()
-    };
-    let arr_i64 = |k: &str| -> Option<Vec<i64>> {
-        doc.get(k)?
-            .as_array()?
-            .iter()
-            .map(|v| v.as_integer())
-            .collect()
-    };
-    let arr_str = |k: &str| -> Option<Vec<String>> {
-        doc.get(k)?
-            .as_array()?
-            .iter()
-            .map(|v| v.as_str().map(str::to_string))
-            .collect()
-    };
+/// The fields of a .phh file (TOML) that a replay reads.
+#[derive(Deserialize)]
+struct PhhFile {
+    variant: String,
+    antes: Vec<u32>,
+    blinds_or_straddles: Vec<u32>,
+    starting_stacks: Vec<Stack>,
+    players: Vec<String>,
+    actions: Vec<String>,
+    #[serde(default, deserialize_with = "whole_chips")]
+    finishing_stacks: Vec<i64>,
+}
 
-    if doc.get("variant")?.as_str()? != "NT" {
+/// Finishing stacks in whole chips. A split pot can log half chips
+/// (`10112.5`), which the engine never deals in: those hands get an empty
+/// list, so their chip accounting goes unchecked.
+fn whole_chips<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<i64>, D::Error> {
+    let chips = Vec::<f64>::deserialize(d)?;
+    if chips.iter().any(|c| c.fract() != 0.0) {
+        return Ok(Vec::new());
+    }
+    Ok(chips.iter().map(|&c| c as i64).collect())
+}
+
+/// Parse one .phh file. `None` for files that do not read as a hand or
+/// that the engine cannot play: other variants, antes, straddles.
+pub fn parse_phh(text: &str) -> Option<PhhHand> {
+    let f: PhhFile = toml::from_str(text).ok()?;
+    if f.variant != "NT" || f.antes.iter().any(|&a| a != 0) {
         return None;
     }
-    let antes = arr_u32("antes")?;
-    if antes.iter().any(|&a| a != 0) {
+    let [sb, bb, straddles @ ..] = &f.blinds_or_straddles[..] else {
         return None;
-    }
-    let blinds = arr_u32("blinds_or_straddles")?;
-    if blinds.len() < 2 || blinds[2..].iter().any(|&b| b != 0) {
-        return None; // straddles unsupported
+    };
+    if straddles.iter().any(|&b| b != 0) {
+        return None;
     }
     Some(PhhHand {
-        blinds: Blinds::new(blinds[0], blinds[1]).ok()?,
-        stacks: arr_u32("starting_stacks")?.into_iter().map(Stack::new).collect::<Option<_>>()?,
-        players: arr_str("players")?,
-        actions: arr_str("actions")?,
-        finishing: arr_i64("finishing_stacks").unwrap_or_default(),
+        blinds: Blinds::new(*sb, *bb).ok()?,
+        stacks: f.starting_stacks,
+        players: f.players,
+        actions: f.actions,
+        finishing: f.finishing_stacks,
     })
 }
 
@@ -405,6 +407,19 @@ finishing_stacks = [10325, 9900, 10000, 10000, 9775, 10000]
         assert_eq!(phh.players[3], "Pluribus");
         assert_eq!(phh.actions.len(), 13);
         assert_eq!(phh.finishing[0], 10325);
+    }
+
+    #[test]
+    fn hands_the_engine_cannot_play_are_not_parsed() {
+        let with = |from: &str, to: &str| parse_phh(&SAMPLE.replacen(from, to, 1));
+        assert!(with("[10000, 10000,", "[0, 10000,").is_none(), "an empty seat");
+        assert!(with("[10000, 10000,", "[-5, 10000,").is_none(), "a negative stack");
+        assert!(with("[50, 100,", "[100, 50,").is_none(), "small blind above big");
+        assert!(with("[50, 100, 0,", "[50, 100, 200,").is_none(), "a straddle");
+        assert!(with("antes = [0,", "antes = [25,").is_none(), "antes");
+        assert!(with("'NT'", "'FT'").is_none(), "another variant");
+        let split = with("[10325, 9900,", "[10112.5, 10112.5,").expect("a split pot still parses");
+        assert!(split.finishing.is_empty(), "half chips are not checked");
     }
 
     /// Replaying the sample hand must (a) stay in sync with the engine,
