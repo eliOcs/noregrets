@@ -14,14 +14,15 @@
 //! (`Policy::search_dist`) from ranges rebuilt by replaying the request.
 
 use crate::bot::{Policy, SearchParams};
-use crate::cards::{parse_card, Card};
+use crate::cards::Card;
 use crate::cfr::TrainConfig;
 use crate::engine::{HandConfig, PlayerAction, Street};
 use crate::mirror::{Bot, Mirror, Source};
 use crate::search::RangeTracker;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::io::{BufRead, Write};
 
 /// Online search for one served blueprint: the policy shares the bot's
@@ -50,6 +51,8 @@ pub enum Act {
     Raise { to: u32 },
 }
 
+/// A request as it arrives. Cards are parsed while deserializing, so a
+/// `Request` holds only real cards; `Spot::new` checks it against the table.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -59,9 +62,108 @@ pub struct Request {
     pub stacks: Vec<u32>,
     /// The seat to act; must match the replayed hand.
     pub seat: usize,
-    pub hole: [String; 2],
-    pub board: Vec<String>,
+    #[serde(deserialize_with = "hole_cards")]
+    pub hole: [Card; 2],
+    #[serde(deserialize_with = "card_names")]
+    pub board: Vec<Card>,
     pub actions: Vec<Act>,
+}
+
+fn card_names<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Card>, D::Error> {
+    Vec::<String>::deserialize(d)?
+        .iter()
+        .map(|s| s.parse::<Card>().map_err(D::Error::custom))
+        .collect()
+}
+
+fn hole_cards<'de, D: Deserializer<'de>>(d: D) -> Result<[Card; 2], D::Error> {
+    let cards = card_names(d)?;
+    let n = cards.len();
+    cards.try_into().map_err(|_| D::Error::invalid_length(n, &"two hole cards"))
+}
+
+/// A request checked against the table it is played at: one positive
+/// stack per seat, the button and the acting seat on the table, no card
+/// twice, and a board of 0, 3, 4 or 5 cards. Only `Spot::new` makes one,
+/// so the decision code can rely on all of that; whether the actions are
+/// legal is found by replaying them.
+#[derive(Debug)]
+pub struct Spot {
+    id: u64,
+    button: usize,
+    stacks: Vec<u32>,
+    seat: usize,
+    hole: [Card; 2],
+    board: Vec<Card>,
+    actions: Vec<Act>,
+}
+
+impl Spot {
+    pub fn new(req: Request, players: usize) -> Result<Spot, String> {
+        if req.stacks.len() != players {
+            return Err(format!("expected {players} stacks, got {}", req.stacks.len()));
+        }
+        if req.button >= players || req.seat >= players {
+            return Err(format!("button and seat must be below {players}"));
+        }
+        if req.stacks.contains(&0) {
+            return Err("stacks must be positive".into());
+        }
+        if ![0, 3, 4, 5].contains(&req.board.len()) {
+            return Err(format!("a board has 0, 3, 4 or 5 cards, not {}", req.board.len()));
+        }
+        let mut used = [false; 52];
+        for &c in req.hole.iter().chain(&req.board) {
+            if std::mem::replace(&mut used[c.index()], true) {
+                return Err(format!("card {c} appears twice"));
+            }
+        }
+        Ok(Spot {
+            id: req.id,
+            button: req.button,
+            stacks: req.stacks,
+            seat: req.seat,
+            hole: req.hole,
+            board: req.board,
+            actions: req.actions,
+        })
+    }
+
+    /// A deck that deals the hole cards to the acting seat and the board as
+    /// the board; every other position gets a card no one in the request
+    /// has seen. Opponents' holes never affect the acting seat's blueprint
+    /// lookup.
+    fn deck(&self) -> [Card; 52] {
+        let n = self.stacks.len();
+        let mut used = [false; 52];
+        for &c in self.hole.iter().chain(&self.board) {
+            used[c.index()] = true;
+        }
+        let mut unseen = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
+        let mut deck = [Card::FILL; 52];
+        for (i, slot) in deck.iter_mut().enumerate() {
+            *slot = if i == 2 * self.seat {
+                self.hole[0]
+            } else if i == 2 * self.seat + 1 {
+                self.hole[1]
+            } else if (2 * n..2 * n + self.board.len()).contains(&i) {
+                self.board[i - 2 * n]
+            } else {
+                unseen.next().expect("52 cards cover every position")
+            };
+        }
+        deck
+    }
+}
+
+/// Read one request line into a `Spot`. The id is read first, so every
+/// error about a request that carries an id echoes it.
+fn read_request(line: &str, players: usize) -> Result<Spot, (Option<u64>, String)> {
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| (None, format!("bad request: {e}")))?;
+    let id = value.get("id").and_then(serde_json::Value::as_u64);
+    let req = Request::deserialize(value).map_err(|e| (id, format!("bad request: {e}")))?;
+    Spot::new(req, players).map_err(|e| (id, e))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -96,16 +198,16 @@ enum Response {
 /// opponent's), ties going to the shallower. Starting stacks are fixed for
 /// the hand, so a seat keeps one blueprint from its first decision to its
 /// last.
-pub fn pick(served: &[Served], req: &Request) -> usize {
-    let deepest_other = req
+pub fn pick(served: &[Served], spot: &Spot) -> usize {
+    let deepest_other = spot
         .stacks
         .iter()
         .enumerate()
-        .filter(|&(i, _)| i != req.seat)
+        .filter(|&(i, _)| i != spot.seat)
         .map(|(_, &s)| s)
         .max()
         .unwrap_or(0);
-    let eff = req.stacks.get(req.seat).map_or(0, |&s| s.min(deepest_other));
+    let eff = spot.stacks[spot.seat].min(deepest_other);
     (0..served.len())
         .min_by_key(|&i| (served[i].cfg.stack.abs_diff(eff), served[i].cfg.stack))
         .expect("serve has at least one blueprint")
@@ -129,20 +231,17 @@ pub fn serve(served: &[Served]) {
         if line.trim().is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<Request>(&line) {
-            Err(e) => Response::Error {
-                id: None,
-                error: format!("bad request: {e}"),
-            },
-            Ok(req) => {
-                let s = &served[pick(served, &req)];
+        let response = match read_request(&line, served[0].cfg.num_players) {
+            Err((id, error)) => Response::Error { id, error },
+            Ok(spot) => {
+                let s = &served[pick(served, &spot)];
                 let decision = match &s.search {
-                    Some(searcher) => decide_with_search(&s.bot, &s.cfg, searcher, &req),
-                    None => decide(&s.bot, &s.cfg, &req),
+                    Some(searcher) => decide_with_search(&s.bot, &s.cfg, searcher, &spot),
+                    None => decide(&s.bot, &s.cfg, &spot),
                 };
                 match decision {
                     Ok(d) => Response::Strategy {
-                        id: req.id,
+                        id: spot.id,
                         strategy: d.strategy,
                         source: match d.source {
                             Source::Blueprint => "blueprint",
@@ -152,7 +251,7 @@ pub fn serve(served: &[Served]) {
                         },
                     },
                     Err(error) => Response::Error {
-                        id: Some(req.id),
+                        id: Some(spot.id),
                         error,
                     },
                 }
@@ -171,8 +270,8 @@ fn write_line(out: &mut impl Write, value: &impl Serialize) {
 }
 
 /// The blueprint strategy for the seat to act in the described hand.
-pub fn decide(bot: &Bot, cfg: &HandConfig, req: &Request) -> Result<Decision, String> {
-    let mut mirror = validate_and_replay(bot, cfg, req, false)?;
+pub fn decide(bot: &Bot, cfg: &HandConfig, spot: &Spot) -> Result<Decision, String> {
+    let mut mirror = replay(bot, cfg, spot, false)?;
     let (choices, source) = mirror.strategy(bot);
     Ok(Decision { strategy: choices_json(choices), source })
 }
@@ -182,8 +281,8 @@ pub fn decide(bot: &Bot, cfg: &HandConfig, req: &Request) -> Result<Decision, St
 /// every action of the request through the blueprint, and the solve is
 /// rooted at the current decision (stateless requests carry no turn solve
 /// into the river). Other preflop decisions, the blueprint's.
-pub fn decide_with_search(bot: &Bot, cfg: &HandConfig, s: &Searcher, req: &Request) -> Result<Decision, String> {
-    let mut mirror = validate_and_replay(bot, cfg, req, true)?;
+pub fn decide_with_search(bot: &Bot, cfg: &HandConfig, s: &Searcher, spot: &Spot) -> Result<Decision, String> {
+    let mut mirror = replay(bot, cfg, spot, true)?;
     if mirror.real.street() == Street::Preflop && !crate::bot::preflop_allin_spot(&mirror.real) {
         let (choices, source) = mirror.strategy(bot);
         return Ok(Decision { strategy: choices_json(choices), source });
@@ -203,7 +302,7 @@ pub fn decide_with_search(bot: &Bot, cfg: &HandConfig, s: &Searcher, req: &Reque
         tracker.observe(o.seat, o.action, &o.shadow, &o.hist, &*policy.strategies, &policy.abs);
     }
     tracker.exclude(mirror.real.board());
-    let mut rng = SmallRng::seed_from_u64(req.id ^ 0x5EA2_C4ED);
+    let mut rng = SmallRng::seed_from_u64(spot.id ^ 0x5EA2_C4ED);
     let (acts, probs) = policy.search_dist(
         &mirror.real,
         mirror.shadow(),
@@ -235,79 +334,16 @@ fn choices_json(choices: Vec<(PlayerAction, f64)>) -> Vec<Choice> {
         .collect()
 }
 
-/// Check the request against the hand it describes and replay it.
-fn validate_and_replay(bot: &Bot, cfg: &HandConfig, req: &Request, log: bool) -> Result<Mirror, String> {
-    let n = cfg.num_players;
-    if req.stacks.len() != n {
-        return Err(format!("expected {n} stacks, got {}", req.stacks.len()));
-    }
-    if req.button >= n || req.seat >= n {
-        return Err(format!("button and seat must be below {n}"));
-    }
-    if req.stacks.contains(&0) {
-        return Err("stacks must be positive".into());
-    }
-    let hole = [card(&req.hole[0])?, card(&req.hole[1])?];
-    let board = req.board.iter().map(|c| card(c)).collect::<Result<Vec<_>, _>>()?;
-    if board.len() > 5 {
-        return Err("the board has at most 5 cards".into());
-    }
-    let deck = deal(n, req.seat, hole, &board)?;
-    let mirror = replay(bot, cfg, req, deck, log)?;
-
-    let real = &mirror.real;
-    if real.is_terminal() {
-        return Err("the hand is over".into());
-    }
-    if real.to_act() != req.seat {
-        return Err(format!("seat {} is to act, not seat {}", real.to_act(), req.seat));
-    }
-    if real.board().len() != board.len() {
-        return Err(format!(
-            "the board has {} cards but the hand is on the {:?}",
-            board.len(),
-            real.street()
-        ));
-    }
-    Ok(mirror)
-}
-
-fn card(s: &str) -> Result<Card, String> {
-    parse_card(s).ok_or_else(|| format!("bad card {s:?}"))
-}
-
-/// A deck that deals `hole` to `seat` and `board` as the board; every other
-/// position gets a card that no one in the request has seen. Opponents'
-/// holes never affect the acting seat's blueprint lookup.
-fn deal(n: usize, seat: usize, hole: [Card; 2], board: &[Card]) -> Result<[Card; 52], String> {
-    let mut used = [false; 52];
-    for &c in hole.iter().chain(board) {
-        if std::mem::replace(&mut used[c.index()], true) {
-            return Err(format!("card {} appears twice", crate::cards::card_str(c)));
-        }
-    }
-    let mut unseen = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
-    let mut deck = [Card::FILL; 52];
-    for (i, slot) in deck.iter_mut().enumerate() {
-        *slot = if i == 2 * seat {
-            hole[0]
-        } else if i == 2 * seat + 1 {
-            hole[1]
-        } else if (2 * n..2 * n + board.len()).contains(&i) {
-            board[i - 2 * n]
-        } else {
-            unseen.next().expect("52 cards cover every position")
-        };
-    }
-    Ok(deck)
-}
-
-fn replay(bot: &Bot, cfg: &HandConfig, req: &Request, deck: [Card; 52], log: bool) -> Result<Mirror, String> {
-    let mut mirror = Mirror::new(cfg, req.button, deck, &req.stacks);
+/// Replay the spot's actions and check that the result is the decision it
+/// asks about: the hand is live, its seat is to act, and its board is the
+/// board of the street the actions reach.
+fn replay(bot: &Bot, cfg: &HandConfig, spot: &Spot, log: bool) -> Result<Mirror, String> {
+    debug_assert_eq!(spot.stacks.len(), cfg.num_players, "a spot built for another table");
+    let mut mirror = Mirror::new(cfg, spot.button, spot.deck(), &spot.stacks);
     if log {
         mirror = mirror.with_log();
     }
-    for (i, &a) in req.actions.iter().enumerate() {
+    for (i, &a) in spot.actions.iter().enumerate() {
         let h = &mirror.real;
         if h.is_terminal() {
             return Err(format!("action {i} comes after the hand ended"));
@@ -327,6 +363,21 @@ fn replay(bot: &Bot, cfg: &HandConfig, req: &Request, deck: [Card; 52], log: boo
             },
         };
         mirror.apply(action, &bot.abs);
+    }
+
+    let real = &mirror.real;
+    if real.is_terminal() {
+        return Err("the hand is over".into());
+    }
+    if real.to_act() != spot.seat {
+        return Err(format!("seat {} is to act, not seat {}", real.to_act(), spot.seat));
+    }
+    if real.board().len() != spot.board.len() {
+        return Err(format!(
+            "the board has {} cards but the hand is on the {:?}",
+            spot.board.len(),
+            real.street()
+        ));
     }
     Ok(mirror)
 }
@@ -361,10 +412,14 @@ mod tests {
             button: 0,
             stacks: vec![stacks; 6],
             seat,
-            hole: hole.map(String::from),
-            board: board.iter().map(|c| c.to_string()).collect(),
+            hole: hole.map(|c| c.parse().unwrap()),
+            board: board.iter().map(|c| c.parse().unwrap()).collect(),
             actions,
         }
+    }
+
+    fn spot(req: Request) -> Spot {
+        Spot::new(req, 6).unwrap()
     }
 
     fn cfg() -> HandConfig {
@@ -377,7 +432,7 @@ mod tests {
     #[test]
     fn unseen_infosets_fall_back_to_check_call() {
         let req = request(STACK, UTG, ["Ah", "Kd"], &[], vec![]);
-        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &spot(req)).unwrap();
         assert_eq!(d.source, Source::Unseen);
         assert_eq!(d.strategy, vec![Choice { act: Act::Call, p: 1.0 }]);
     }
@@ -385,8 +440,9 @@ mod tests {
     /// A bot whose only infoset is UTG's first decision with `hole`,
     /// weighted per abstract action by `weights(menu length)`.
     fn utg_bot(hole: [&str; 2], weights: impl FnOnce(usize) -> Vec<f32>) -> Bot {
-        let cards = hole.map(|c| parse_card(c).unwrap());
-        let h = Hand::new(&cfg(), 0, deal(6, UTG, cards, &[]).unwrap());
+        let s = spot(request(STACK, UTG, hole, &[], vec![]));
+        let cards = s.hole;
+        let h = Hand::new(&cfg(), 0, s.deck());
         let menu = bot(StrategyMap::default()).abs.abstract_actions(&h).len();
         let mut map = StrategyMap::default();
         map.insert(make_key(preflop_bucket(cards), &[]).to_vec(), weights(menu));
@@ -408,7 +464,7 @@ mod tests {
             s[menu - 1] = 0.5;
             s
         });
-        let d = decide(&p, &cfg(), &request(STACK, UTG, ["Ah", "Kd"], &[], vec![])).unwrap();
+        let d = decide(&p, &cfg(), &spot(request(STACK, UTG, ["Ah", "Kd"], &[], vec![]))).unwrap();
         assert_eq!(d.source, Source::Blueprint);
         assert_eq!(
             d.strategy,
@@ -422,7 +478,7 @@ mod tests {
     #[test]
     fn deep_stacks_shove_only_the_training_stack() {
         let p = utg_bot(["Ah", "Kd"], all_in);
-        let d = decide(&p, &cfg(), &request(3 * STACK, UTG, ["Ah", "Kd"], &[], vec![])).unwrap();
+        let d = decide(&p, &cfg(), &spot(request(3 * STACK, UTG, ["Ah", "Kd"], &[], vec![]))).unwrap();
         assert_eq!(d.source, Source::Blueprint, "a deep stack still finds the training-depth infoset");
         assert_eq!(d.strategy, vec![Choice { act: Act::Raise { to: STACK }, p: 1.0 }]);
     }
@@ -430,7 +486,7 @@ mod tests {
     #[test]
     fn short_stacks_shove_their_real_stack() {
         let p = utg_bot(["Ah", "Kd"], all_in);
-        let d = decide(&p, &cfg(), &request(STACK / 2, UTG, ["Ah", "Kd"], &[], vec![])).unwrap();
+        let d = decide(&p, &cfg(), &spot(request(STACK / 2, UTG, ["Ah", "Kd"], &[], vec![]))).unwrap();
         assert_eq!(d.source, Source::Blueprint, "a short stack still finds the training-depth infoset");
         assert_eq!(d.strategy, vec![Choice { act: Act::Raise { to: STACK / 2 }, p: 1.0 }]);
     }
@@ -443,7 +499,7 @@ mod tests {
         actions.extend([Act::Fold; 4]);
         actions.push(Act::Call);
         let req = request(3 * STACK, 2, ["7c", "7d"], &["2h", "9s", "Kc"], actions);
-        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &spot(req)).unwrap();
         assert_eq!(d.source, Source::Capped);
         assert_eq!(d.strategy, vec![Choice { act: Act::Call, p: 1.0 }]);
     }
@@ -456,7 +512,7 @@ mod tests {
         actions.extend([Act::Fold; 3]);
         let mut req = request(STACK, 4, ["7c", "7d"], &["2h", "9s", "Kc"], actions);
         req.stacks[UTG] = STACK / 5;
-        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &spot(req)).unwrap();
         assert_eq!(d.source, Source::Unseen, "looked up on-tree, not capped");
     }
 
@@ -466,24 +522,24 @@ mod tests {
         let mut actions = vec![Act::Fold; 4];
         actions.extend([Act::Call, Act::Call]);
         let req = request(STACK, 1, ["7c", "7d"], &["2h", "9s", "Kc"], actions);
-        let d = decide(&bot(StrategyMap::default()), &cfg(), &req).unwrap();
+        let d = decide(&bot(StrategyMap::default()), &cfg(), &spot(req)).unwrap();
         assert_eq!(d.strategy, vec![Choice { act: Act::Call, p: 1.0 }]);
     }
 
     #[test]
     fn off_menu_raises_are_accepted_and_followed() {
         let req = request(STACK, 4, ["Qs", "Js"], &[], vec![Act::Raise { to: 333 }]);
-        assert!(decide(&bot(StrategyMap::default()), &cfg(), &req).is_ok());
+        assert!(decide(&bot(StrategyMap::default()), &cfg(), &spot(req)).is_ok());
     }
 
     #[test]
     fn rejects_requests_that_do_not_match_the_hand() {
         let p = bot(StrategyMap::default());
-        let err = |req: Request| decide(&p, &cfg(), &req).unwrap_err();
+        let err = |req: Request| Spot::new(req, 6).and_then(|s| decide(&p, &cfg(), &s)).unwrap_err();
         assert!(err(request(STACK, 4, ["Ah", "Kd"], &[], vec![])).contains("seat 3 is to act"));
         assert!(err(request(STACK, UTG, ["Ah", "Ah"], &[], vec![])).contains("twice"));
         assert!(err(request(STACK, UTG, ["Ah", "Kd"], &["2c", "3c", "4c"], vec![])).contains("board"));
-        assert!(err(request(STACK, UTG, ["Ah", "Xd"], &[], vec![])).contains("bad card"));
+        assert!(err(request(STACK, UTG, ["Ah", "Kd"], &["2c", "3c"], vec![])).contains("0, 3, 4 or 5"));
         assert!(err(request(STACK, UTG, ["Ah", "Kd"], &[], vec![Act::Raise { to: 150 }])).contains("outside"));
         let mut short = request(STACK, UTG, ["Ah", "Kd"], &[], vec![]);
         short.stacks.pop();
@@ -504,7 +560,7 @@ mod tests {
         let at = |stacks: Vec<u32>, seat: usize| {
             let mut req = request(STACK, seat, ["Ah", "Kd"], &[], vec![]);
             req.stacks = stacks;
-            depths[pick(&served, &req)]
+            depths[pick(&served, &spot(req))]
         };
         assert_eq!(at(vec![10_000; 6], UTG), 10_000);
         assert_eq!(at(vec![8_000; 6], UTG), 8_000);
@@ -545,7 +601,7 @@ mod tests {
         let mut actions = vec![Act::Raise { to: 290 }, Act::Call, Act::Call];
         actions.extend([Act::Fold; 3]);
         let req = request(STACK, UTG, ["Ah", "Kd"], &["2h", "9s", "Kc"], actions);
-        let d = decide_with_search(&b, &cfg(), &s, &req).unwrap();
+        let d = decide_with_search(&b, &cfg(), &s, &spot(req)).unwrap();
         assert_eq!(d.source, Source::Search);
         let total: f64 = d.strategy.iter().map(|c| c.p).sum();
         assert!((total - 1.0).abs() < 1e-9, "probabilities sum to {total}");
@@ -561,7 +617,7 @@ mod tests {
     fn search_leaves_preflop_to_the_blueprint() {
         let (b, s) = searcher();
         let req = request(STACK, UTG, ["Ah", "Kd"], &[], vec![]);
-        let d = decide_with_search(&b, &cfg(), &s, &req).unwrap();
+        let d = decide_with_search(&b, &cfg(), &s, &spot(req)).unwrap();
         assert_eq!(d.source, Source::Unseen);
     }
 
@@ -573,7 +629,7 @@ mod tests {
         let mut actions = vec![Act::Raise { to: 290 }, Act::Raise { to: STACK }];
         actions.extend([Act::Fold; 3]);
         let call = |hole: [&str; 2]| {
-            let d = decide_with_search(&b, &cfg(), &s, &request(STACK, 2, hole, &[], actions.clone())).unwrap();
+            let d = decide_with_search(&b, &cfg(), &s, &spot(request(STACK, 2, hole, &[], actions.clone()))).unwrap();
             assert_eq!(d.source, Source::Search);
             d.strategy.iter().filter(|c| c.act == Act::Call).map(|c| c.p).sum::<f64>()
         };
@@ -587,7 +643,7 @@ mod tests {
         let mut actions = vec![Act::Raise { to: 290 }, Act::Call, Act::Call];
         actions.extend([Act::Fold; 3]);
         let req = request(STACK, UTG, ["Ah", "Kd"], &["2h", "9s", "Kc"], actions);
-        let m = validate_and_replay(&b, &cfg(), &req, true).unwrap();
+        let m = replay(&b, &cfg(), &spot(req), true).unwrap();
         let tokens = m.hist().iter().filter(|&&t| t != crate::abstraction::TOKEN_STREET_SEP).count();
         assert_eq!(m.log().len(), tokens);
         assert_eq!(m.log()[0].seat, UTG);
@@ -603,7 +659,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(req.actions, vec![Act::Raise { to: 250 }]);
+        assert_eq!(req.hole.map(|c| c.to_string()), ["Ah".to_string(), "Kd".to_string()]);
         let json = serde_json::to_string(&Choice { act: Act::Raise { to: 250 }, p: 0.5 }).unwrap();
         assert_eq!(json, r#"{"type":"raise","to":250,"p":0.5}"#);
+    }
+
+    #[test]
+    fn malformed_requests_are_answered_with_their_id() {
+        let line = |hole: &str| {
+            format!(
+                r#"{{"id":7,"button":0,"stacks":[10000,10000,10000,10000,10000,10000],
+                    "seat":3,"hole":{hole},"board":[],"actions":[]}}"#
+            )
+        };
+        let (id, e) = read_request(&line(r#"["Ah","Xd"]"#), 6).unwrap_err();
+        assert_eq!(id, Some(7));
+        assert!(e.contains("bad card"), "{e}");
+        let (id, e) = read_request(&line(r#"["Ah"]"#), 6).unwrap_err();
+        assert_eq!(id, Some(7));
+        assert!(e.contains("two hole cards"), "{e}");
+        let (id, e) = read_request(&line(r#"["Ah","Kd"]"#), 5).unwrap_err();
+        assert_eq!(id, Some(7));
+        assert!(e.contains("expected 5 stacks"), "{e}");
+        assert_eq!(read_request("not json", 6).unwrap_err().0, None);
+        assert!(read_request(&line(r#"["Ah","Kd"]"#), 6).is_ok());
     }
 }
