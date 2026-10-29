@@ -262,7 +262,7 @@ pub struct LbrResult {
 /// hand), every other seat folds. Stacks reset per hand, button random.
 pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: u32, seed: u64) -> LbrResult {
     let n = cfg.num_players.get();
-    let bb = cfg.bb as f64;
+    let bb = cfg.blinds.bb() as f64;
     let lbr = Lbr::new(policy, runouts);
     let results: Vec<f64> = (0..hands)
         .into_par_iter()
@@ -559,7 +559,7 @@ pub fn run_lbr_multiway(
     search: Option<crate::bot::SearchParams>,
 ) -> LbrResult {
     let n = cfg.num_players.get();
-    let bb = cfg.bb as f64;
+    let bb = cfg.blinds.bb() as f64;
     let lbr = Lbr::new(policy, runouts);
     let train_cfg = crate::cfr::TrainConfig {
         hand: cfg.clone(),
@@ -657,7 +657,7 @@ pub fn run_lbr_multiway(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Players;
+    use crate::engine::{Players, Stack};
     use crate::abstraction::{preflop_bucket, AbsConfig, Abstraction};
     use crate::cards::parse_cards;
     use crate::cfr::{make_key, Blueprint};
@@ -709,12 +709,7 @@ mod tests {
     /// HU table walked to the river with p1 shoving: p0 (LBR) to act.
     /// Deck layout: p0 = first two cards, p1 = next two, board = next five.
     fn river_facing_shove(front: &str, policy: &Policy) -> Table {
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut t = Table::new(&cfg, 0, rigged_deck(front));
         // p0 limps, p1 checks -> flop; p1/p0 check down to the river.
         for _ in 0..6 {

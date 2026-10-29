@@ -12,7 +12,7 @@
 
 use crate::bot::Policy;
 use crate::cards::{parse_card, Card};
-use crate::engine::{HandConfig, PlayerAction, Players, Street};
+use crate::engine::{Blinds, HandConfig, PlayerAction, Players, Stack, Street};
 use crate::table::Table;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -20,9 +20,8 @@ use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct PhhHand {
-    pub sb: u32,
-    pub bb: u32,
-    pub stacks: Vec<u32>,
+    pub blinds: Blinds,
+    pub stacks: Vec<Stack>,
     pub players: Vec<String>,
     pub actions: Vec<String>,
     pub finishing: Vec<i64>,
@@ -35,7 +34,7 @@ pub fn parse_phh(text: &str) -> Option<PhhHand> {
         doc.get(k)?
             .as_array()?
             .iter()
-            .map(|v| v.as_integer().map(|x| x as u32))
+            .map(|v| v.as_integer().and_then(|x| u32::try_from(x).ok()))
             .collect()
     };
     let arr_i64 = |k: &str| -> Option<Vec<i64>> {
@@ -65,9 +64,8 @@ pub fn parse_phh(text: &str) -> Option<PhhHand> {
         return None; // straddles unsupported
     }
     Some(PhhHand {
-        sb: blinds[0],
-        bb: blinds[1],
-        stacks: arr_u32("starting_stacks")?,
+        blinds: Blinds::new(blinds[0], blinds[1]).ok()?,
+        stacks: arr_u32("starting_stacks")?.into_iter().map(Stack::new).collect::<Option<_>>()?,
         players: arr_str("players")?,
         actions: arr_str("actions")?,
         finishing: arr_i64("finishing_stacks").unwrap_or_default(),
@@ -210,8 +208,7 @@ pub fn replay_hand(
     let cfg = HandConfig {
         num_players: players,
         stack: phh.stacks[0],
-        sb: phh.sb,
-        bb: phh.bb,
+        blinds: phh.blinds,
     };
     if phh.stacks.iter().any(|&s| s != phh.stacks[0]) {
         return Err(ReplayError::Unsupported); // engine table starts symmetric
@@ -276,7 +273,7 @@ pub fn replay_hand(
     // Chip accounting check against the logged finishing stacks.
     let chips_ok = if table.real.is_terminal() && phh.finishing.len() == n {
         let u = table.real.utilities();
-        Some((0..n).all(|p| phh.stacks[p] as i64 + u[p] == phh.finishing[p]))
+        Some((0..n).all(|p| phh.stacks[p].get() as i64 + u[p] == phh.finishing[p]))
     } else {
         None
     };
@@ -404,8 +401,7 @@ finishing_stacks = [10325, 9900, 10000, 10000, 9775, 10000]
     #[test]
     fn parses_the_sample_hand() {
         let phh = parse_phh(SAMPLE).expect("sample must parse");
-        assert_eq!(phh.sb, 50);
-        assert_eq!(phh.bb, 100);
+        assert_eq!(phh.blinds, Blinds::STANDARD);
         assert_eq!(phh.players[3], "Pluribus");
         assert_eq!(phh.actions.len(), 13);
         assert_eq!(phh.finishing[0], 10325);

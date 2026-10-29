@@ -16,7 +16,7 @@
 use crate::bot::{Policy, SearchParams};
 use crate::cards::Card;
 use crate::cfr::TrainConfig;
-use crate::engine::{HandConfig, PlayerAction, Players, Street};
+use crate::engine::{HandConfig, PlayerAction, Players, Stack, Street};
 use crate::mirror::{Bot, Mirror, Source};
 use crate::search::RangeTracker;
 use rand::rngs::SmallRng;
@@ -59,7 +59,7 @@ pub struct Request {
     pub id: u64,
     pub button: usize,
     /// Stacks at the start of the hand, before blinds, in chips (bb = 100).
-    pub stacks: Vec<u32>,
+    pub stacks: Vec<Stack>,
     /// The seat to act; must match the replayed hand.
     pub seat: usize,
     #[serde(deserialize_with = "hole_cards")]
@@ -82,8 +82,8 @@ fn hole_cards<'de, D: Deserializer<'de>>(d: D) -> Result<[Card; 2], D::Error> {
     cards.try_into().map_err(|_| D::Error::invalid_length(n, &"two hole cards"))
 }
 
-/// A request checked against the table it is played at: one positive
-/// stack per seat, the button and the acting seat on the table, no card
+/// A request checked against the table it is played at: one stack per
+/// seat, the button and the acting seat on the table, no card
 /// twice, and a board of 0, 3, 4 or 5 cards. Only `Spot::new` makes one,
 /// so the decision code can rely on all of that; whether the actions are
 /// legal is found by replaying them.
@@ -91,7 +91,7 @@ fn hole_cards<'de, D: Deserializer<'de>>(d: D) -> Result<[Card; 2], D::Error> {
 pub struct Spot {
     id: u64,
     button: usize,
-    stacks: Vec<u32>,
+    stacks: Vec<Stack>,
     seat: usize,
     hole: [Card; 2],
     board: Vec<Card>,
@@ -106,9 +106,6 @@ impl Spot {
         }
         if req.button >= players || req.seat >= players {
             return Err(format!("button and seat must be below {players}"));
-        }
-        if req.stacks.contains(&0) {
-            return Err("stacks must be positive".into());
         }
         if ![0, 3, 4, 5].contains(&req.board.len()) {
             return Err(format!("a board has 0, 3, 4 or 5 cards, not {}", req.board.len()));
@@ -205,12 +202,12 @@ pub fn pick(served: &[Served], spot: &Spot) -> usize {
         .iter()
         .enumerate()
         .filter(|&(i, _)| i != spot.seat)
-        .map(|(_, &s)| s)
+        .map(|(_, &s)| s.get())
         .max()
         .unwrap_or(0);
-    let eff = spot.stacks[spot.seat].min(deepest_other);
+    let eff = spot.stacks[spot.seat].get().min(deepest_other);
     (0..served.len())
-        .min_by_key(|&i| (served[i].cfg.stack.abs_diff(eff), served[i].cfg.stack))
+        .min_by_key(|&i| (served[i].cfg.stack.get().abs_diff(eff), served[i].cfg.stack))
         .expect("serve has at least one blueprint")
 }
 
@@ -411,7 +408,7 @@ mod tests {
         Request {
             id: 1,
             button: 0,
-            stacks: vec![stacks; 6],
+            stacks: vec![Stack::new(stacks).unwrap(); 6],
             seat,
             hole: hole.map(|c| c.parse().unwrap()),
             board: board.iter().map(|c| c.parse().unwrap()).collect(),
@@ -512,7 +509,7 @@ mod tests {
         let mut actions = vec![Act::Raise { to: STACK / 5 }, Act::Call, Act::Call];
         actions.extend([Act::Fold; 3]);
         let mut req = request(STACK, 4, ["7c", "7d"], &["2h", "9s", "Kc"], actions);
-        req.stacks[UTG] = STACK / 5;
+        req.stacks[UTG] = Stack::new(STACK / 5).unwrap();
         let d = decide(&bot(StrategyMap::default()), &cfg(), &spot(req)).unwrap();
         assert_eq!(d.source, Source::Unseen, "looked up on-tree, not capped");
     }
@@ -554,13 +551,13 @@ mod tests {
             .iter()
             .map(|&stack| Served {
                 bot: bot(StrategyMap::default()),
-                cfg: HandConfig { stack, ..cfg() },
+                cfg: HandConfig { stack: Stack::new(stack).unwrap(), ..cfg() },
                 search: None,
             })
             .collect();
         let at = |stacks: Vec<u32>, seat: usize| {
             let mut req = request(STACK, seat, ["Ah", "Kd"], &[], vec![]);
-            req.stacks = stacks;
+            req.stacks = stacks.into_iter().map(|s| Stack::new(s).unwrap()).collect();
             depths[pick(&served, &spot(req))]
         };
         assert_eq!(at(vec![10_000; 6], UTG), 10_000);
@@ -682,6 +679,10 @@ mod tests {
         let (id, e) = read_request(&line(r#"["Ah","Kd"]"#), Players::new(5).unwrap()).unwrap_err();
         assert_eq!(id, Some(7));
         assert!(e.contains("expected 5 stacks"), "{e}");
+        let empty_seat = line(r#"["Ah","Kd"]"#).replacen("10000", "0", 1);
+        let (id, e) = read_request(&empty_seat, Players::SIX).unwrap_err();
+        assert_eq!(id, Some(7));
+        assert!(e.contains("at least one chip"), "{e}");
         assert_eq!(read_request("not json", Players::SIX).unwrap_err().0, None);
         assert!(read_request(&line(r#"["Ah","Kd"]"#), Players::SIX).is_ok());
     }

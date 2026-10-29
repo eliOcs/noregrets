@@ -699,7 +699,7 @@ mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
     use crate::cards::{fresh_deck, parse_cards};
-    use crate::engine::{HandConfig, PlayerAction, Players};
+    use crate::engine::{HandConfig, PlayerAction, Players, Stack};
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
@@ -727,12 +727,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&cfg, 0, deck);
         h.apply(PlayerAction::CheckCall); // p0 limps
         h.apply(PlayerAction::CheckCall); // p1 checks the option

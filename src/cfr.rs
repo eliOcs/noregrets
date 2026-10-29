@@ -1179,6 +1179,7 @@ impl Blueprint {
 mod tests {
     use super::*;
     use crate::abstraction::{preflop_bucket, AbsAction, AbsConfig};
+    use crate::engine::Stack;
     use crate::cards::make_card;
 
     fn push_fold_trainer() -> Trainer {
@@ -1194,12 +1195,7 @@ mod tests {
         let cents = Centroids::train(&abs_cfg, 400, 99);
         let abs = Abstraction::with_centroids(abs_cfg, Some(cents));
         let cfg = TrainConfig {
-            hand: HandConfig {
-                num_players: Players::TWO,
-                stack: 1_000,
-                sb: 50,
-                bb: 100,
-            },
+            hand: HandConfig::new(Players::TWO, Stack::new(1_000).unwrap()),
             prune_after: u64::MAX, // no pruning in this small test
             ..TrainConfig::default()
         };
@@ -1289,12 +1285,7 @@ mod tests {
             let abs = Abstraction::with_centroids(bp.abs_cfg.clone(), bp.centroids.clone());
             Policy::new(bp, Arc::new(abs))
         };
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 1_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(1_000).unwrap());
         let nash = train(None);
         let rnr = train(Some(RnrCfg {
             model: Baseline::Caller,
@@ -1345,12 +1336,7 @@ mod tests {
                 }))
                 .with_rnr_opponent(Some(empty_opp)),
         );
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 1_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(1_000).unwrap());
         let w_nash = run_eval(&nash, &cfg, Baseline::Caller, 40_000, 5);
         let w_rnr = run_eval(&rnr, &cfg, Baseline::Caller, 40_000, 5);
         assert!(

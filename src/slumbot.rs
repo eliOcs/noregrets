@@ -19,14 +19,14 @@ use crate::abstraction::AbsAction;
 use crate::bot::{Policy, SearchParams, SearchSession};
 use crate::cards::{parse_card, Card};
 use crate::cfr::TrainConfig;
-use crate::engine::{HandConfig, PlayerAction, Players};
+use crate::engine::{HandConfig, PlayerAction, Players, Stack};
 use crate::search::RangeTracker;
 use crate::table::Table;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use serde_json::Value;
 
-pub const STACK: u32 = 20_000;
+pub const STACK: Stack = Stack::new(20_000).unwrap();
 
 /// One parsed increment of Slumbot's action string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,12 +268,7 @@ impl HandState {
         if holes.len() != 2 {
             return Err("bad hole cards".into());
         }
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: STACK,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, STACK);
         // Engine deal order: seat 0 gets deck[0..2], seat 1 deck[2..4].
         // Opponent cards are unknown: give seat 1 arbitrary non-colliding
         // cards (never read — ranges come from the tracker, showdowns are
@@ -387,12 +382,7 @@ pub fn run(
     progress: &mut dyn FnMut(u64, f64),
 ) -> Result<SlumbotResult, String> {
     let train_cfg = TrainConfig {
-        hand: HandConfig {
-            num_players: Players::TWO,
-            stack: STACK,
-            sb: 50,
-            bb: 100,
-        },
+        hand: HandConfig::new(Players::TWO, STACK),
         prune_after: u64::MAX,
         ..TrainConfig::default()
     };

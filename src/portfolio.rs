@@ -73,7 +73,7 @@ pub fn run_portfolio_eval(
     seed: u64,
 ) -> (EvalResult, Vec<u64>) {
     let n = cfg.num_players.get();
-    let bb = cfg.bb as f64;
+    let bb = cfg.blinds.bb() as f64;
     let mut results = Vec::with_capacity(hands as usize);
     for i in 0..hands {
         let mut rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x2545_F491_4F6C_DD1D));
@@ -118,7 +118,7 @@ pub fn run_portfolio_eval(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Players;
+    use crate::engine::{Players, Stack};
     use crate::abstraction::{AbsConfig, Abstraction, Centroids};
     use crate::cfr::{RnrCfg, TrainConfig, Trainer};
     use std::sync::Arc;
@@ -135,12 +135,7 @@ mod tests {
         let cents = Centroids::train(&abs_cfg, 400, 99);
         let abs = Arc::new(Abstraction::with_centroids(abs_cfg, Some(cents)));
         let cfg = TrainConfig {
-            hand: HandConfig {
-                num_players: Players::TWO,
-                stack: 1_000,
-                sb: 50,
-                bb: 100,
-            },
+            hand: HandConfig::new(Players::TWO, Stack::new(1_000).unwrap()),
             prune_after: u64::MAX,
             ..TrainConfig::default()
         };
@@ -155,12 +150,7 @@ mod tests {
     /// equilibrium arm would alone.
     #[test]
     fn bandit_converges_to_the_exploitative_arm() {
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 1_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(1_000).unwrap());
         let nash = train_arm(None);
         let rnr = train_arm(Some(RnrCfg {
             model: Baseline::Caller,

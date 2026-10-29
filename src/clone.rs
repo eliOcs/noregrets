@@ -55,12 +55,7 @@ fn replay_hand(v: &Value, abs: &Abstraction) -> Result<Vec<Decision>, String> {
     let action = v.get("action").and_then(|a| a.as_str()).unwrap_or("");
     let (acts, _) = parse_incr(action, 0)?;
 
-    let cfg = HandConfig {
-        num_players: Players::TWO,
-        stack: STACK,
-        sb: 50,
-        bb: 100,
-    };
+    let cfg = HandConfig::new(Players::TWO, STACK);
     // Seat 0 = us, seat 1 = Slumbot (mirrors the live adapter).
     let mut deck = crate::cards::fresh_deck();
     let mut used = [false; 52];

@@ -6,7 +6,7 @@
 //! memoized in a lock-free cache keyed exactly (packed cards, no hash collisions).
 
 use crate::cards::{fresh_deck, Card, Rank, Suit};
-use crate::engine::{Hand, PlayerAction, Players, Street};
+use crate::engine::{Hand, PlayerAction, Players, Stack, Street};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -276,12 +276,7 @@ pub fn strategic_fingerprint(
 /// first to act) with the given hole/board, plus its history tokens.
 fn standard_state(hole: [Card; 2], board: &[Card]) -> (crate::engine::Hand, Vec<u8>) {
     debug_assert!(board.len() == 3 || board.len() == 4);
-    let cfg = crate::engine::HandConfig {
-        num_players: Players::TWO,
-        stack: 10_000,
-        sb: 50,
-        bb: 100,
-    };
+    let cfg = crate::engine::HandConfig::new(Players::TWO, Stack::new(10_000).unwrap());
     let mut used = [false; 52];
     used[hole[0].index()] = true;
     used[hole[1].index()] = true;

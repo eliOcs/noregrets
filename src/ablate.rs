@@ -16,7 +16,7 @@
 
 use crate::abstraction::{AbsConfig, Abstraction};
 use crate::cards::fresh_deck;
-use crate::engine::{Hand, HandConfig, PlayerAction, Players};
+use crate::engine::{Hand, HandConfig, PlayerAction, Players, Stack};
 use crate::river::RiverSolver;
 use crate::search::NUM_COMBOS;
 use rand::rngs::SmallRng;
@@ -48,12 +48,7 @@ pub struct AblateRow {
 /// Random heads-up river spot: random board, random preflop raise size
 /// (pot 400..4000), checked to p0 on the river.
 fn random_river_spot(rng: &mut SmallRng) -> Hand {
-    let cfg = HandConfig {
-        num_players: Players::TWO,
-        stack: 10_000,
-        sb: 50,
-        bb: 100,
-    };
+    let cfg = HandConfig::new(Players::TWO, Stack::new(10_000).unwrap());
     let mut deck = fresh_deck();
     deck.shuffle(rng);
     let mut h = Hand::new(&cfg, 0, deck);

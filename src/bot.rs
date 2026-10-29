@@ -783,7 +783,7 @@ mod tests {
     use crate::abstraction::AbsConfig;
     use crate::cards::{fresh_deck, parse_cards, Card};
     use crate::cfr::make_key;
-    use crate::engine::{HandConfig, PlayerAction, Players};
+    use crate::engine::{HandConfig, PlayerAction, Players, Stack};
     use rand::SeedableRng;
 
     fn abs_small() -> Abstraction {
@@ -897,12 +897,7 @@ mod tests {
             }
         }
 
-        let hand_cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&hand_cfg, 0, deck);
         let abs = abs_small();
         let mut hist: Vec<u8> = Vec::new();
@@ -995,12 +990,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let hand_cfg = HandConfig {
-            num_players: Players::THREE,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand_cfg = HandConfig::new(Players::THREE, Stack::new(2_000).unwrap());
         // The blueprint's 6 river buckets are too coarse here: against
         // the resolved (strong) shoving range the top bucket mixes the
         // nuts with hands that correctly fold (~18% fold measured), so
@@ -1090,12 +1080,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let hand_cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&hand_cfg, 0, deck);
         let abs = Arc::new(abs_small());
         let policy = Policy::new(
@@ -1175,12 +1160,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let hand_cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let abs = Arc::new(abs_small());
         let policy = Policy::new(
             Blueprint {
@@ -1258,12 +1238,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let hand_cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let abs = Arc::new(abs_small());
         let policy = Policy::new(
             Blueprint {
@@ -1390,12 +1365,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let hand_cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let abs = Arc::new(abs_small());
         let policy = Policy::new(
             Blueprint {
@@ -1469,12 +1439,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let hand_cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         // The 800-into-200 off-tree bet maps to the callable 400 size only on
         // the wide menu; the test is about pricing, so pin that menu.
         let mut cfg = abs_small().cfg.clone();

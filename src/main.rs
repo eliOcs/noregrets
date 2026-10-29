@@ -41,7 +41,7 @@ use bot::{Policy, SearchParams};
 use cfr::{Blueprint, TrainConfig, Trainer};
 use clap::{Parser, Subcommand};
 use abstraction::MenuShape;
-use engine::{HandConfig, Players};
+use engine::{HandConfig, Players, Stack};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use table::Baseline;
@@ -71,8 +71,8 @@ enum Cmd {
         /// Starting stack in chips (blinds are 50/100, so 10,000 = 100bb
         /// — the Pluribus setup — and 20,000 = 200bb — the Slumbot / GTO
         /// Wizard benchmark setup).
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
         /// Resume from a training checkpoint.
         #[arg(long)]
         resume: Option<String>,
@@ -260,8 +260,8 @@ enum Cmd {
         blueprint: String,
         /// The stack the blueprint was trained at, in chips; deeper stacks
         /// are played as if this deep.
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
         /// Another blueprint and its training stack, as PATH:STACK
         /// (repeatable). Each request uses the blueprint nearest the acting
         /// seat's effective stack.
@@ -306,16 +306,16 @@ enum Cmd {
         #[arg(long)]
         a: String,
         /// A's training stack in chips.
-        #[arg(long, default_value_t = 10_000)]
-        a_stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        a_stack: Stack,
         #[arg(long)]
         b: String,
         /// B's training stack in chips.
         #[arg(long)]
-        b_stack: u32,
+        b_stack: Stack,
         /// Real stacks at the table, in chips.
         #[arg(long)]
-        stack: u32,
+        stack: Stack,
         #[arg(long, default_value_t = 100_000)]
         hands: u64,
         #[arg(long, default_value_t = 42)]
@@ -336,8 +336,8 @@ enum Cmd {
         iters: u64,
         #[arg(long)]
         out: String,
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
         /// Regret floor per unit of linear weight (see train).
         #[arg(long, default_value_t = 3.0e8)]
         floor_per_weight: f64,
@@ -380,8 +380,8 @@ enum Cmd {
         #[arg(long)]
         blueprint: String,
         /// The blueprint's training stack in chips.
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
         /// Preflop actions from the start of the hand, button in seat 0
         /// (UTG acts first): f, c, rN (raise BET_SIZES[N] of the pot), a.
         /// "f f f r3 f" is the big blind facing a 2.9bb button open.
@@ -397,8 +397,8 @@ enum Cmd {
     ActionEv {
         #[arg(long)]
         blueprint: String,
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
         /// Preflop line, as for preflop-probe.
         #[arg(long)]
         line: String,
@@ -431,8 +431,8 @@ enum Cmd {
         #[arg(long)]
         blueprint: String,
         /// The blueprint's training stack in chips; the table plays at it.
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
         #[arg(long, value_enum)]
         resize: offmenu_match::Resize,
         #[arg(long, default_value_t = 100_000)]
@@ -526,8 +526,8 @@ enum Cmd {
         #[arg(long)]
         search_buckets: Option<u16>,
         /// Starting stack in chips: the depth the blueprint was trained at.
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
     },
     /// Lower-bound the blueprint's exploitability with a Local Best Response
     /// agent (Lisý & Bowling 2017): heads-up blind vs blind, other seats fold.
@@ -570,8 +570,8 @@ enum Cmd {
         #[arg(long)]
         search_buckets: Option<u16>,
         /// Starting stack in chips: the depth the blueprint was trained at.
-        #[arg(long, default_value_t = 10_000)]
-        stack: u32,
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
     },
     /// Safety ablation: unsafe vs gadget river resolving under corrupted
     /// range beliefs — reports best-response margins beyond safety values.
@@ -1074,7 +1074,7 @@ fn main() {
                 max_iters: search_iters,
                 ..SearchParams::default()
             };
-            let load = |path: &str, depth: u32| -> serve::Served {
+            let load = |path: &str, depth: Stack| -> serve::Served {
                 let (bot, cfg) = load_bot(path, depth);
                 if !search {
                     return serve::Served { bot, cfg, search: None };
@@ -1099,7 +1099,7 @@ fn main() {
             for spec in &also {
                 let (path, depth) = spec
                     .rsplit_once(':')
-                    .and_then(|(p, d)| Some((p, d.parse::<u32>().ok()?)))
+                    .and_then(|(p, d)| Some((p, d.parse::<Stack>().ok()?)))
                     .unwrap_or_else(|| die(&format!("--also expects PATH:STACK, got '{spec}'")));
                 served.push(load(path, depth));
             }
@@ -1384,7 +1384,7 @@ fn main() {
                 hands,
                 seed,
             );
-            let bb = stack / 100;
+            let bb = stack.get() / 100;
             println!(
                 "{} paired hands at {bb}bb in {:.0}s\n  \
                  A ({a_stack} chips) as hero: {:+.0} ±{:.0} mbb/hand ({:.1}% unseen, {:.1}% capped)\n  \
@@ -2038,7 +2038,7 @@ fn load_policy_strat(path: &str, strat_prev: Option<&str>) -> Policy {
 /// Load a bot from a training or compact blueprint, with diagnostics on
 /// stderr only (stdout may carry a protocol). `stack` is the depth the
 /// blueprint was trained at.
-fn load_bot(path: &str, stack: u32) -> (mirror::Bot, HandConfig) {
+fn load_bot(path: &str, stack: Stack) -> (mirror::Bot, HandConfig) {
     let fail = |e: std::io::Error| -> ! { die(&format!("cannot load blueprint '{path}': {e}")) };
     if let Some((base, pre)) = path.split_once('+') {
         let (bot, cfg) = load_bot(base, stack);

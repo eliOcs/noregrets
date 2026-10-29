@@ -7,7 +7,7 @@
 
 use crate::cards::{fresh_deck, Card};
 use crate::cfr::sample_index;
-use crate::engine::{HandConfig, PlayerAction};
+use crate::engine::{HandConfig, PlayerAction, Stack};
 use crate::mirror::{Bot, Mirror, Source};
 use crate::table::mean_ci;
 use rand::rngs::SmallRng;
@@ -39,9 +39,9 @@ struct Counts {
     capped: u64,
 }
 
-pub fn run(a: &Side, b: &Side, stack: u32, hands: u64, seed: u64) -> Report {
+pub fn run(a: &Side, b: &Side, stack: Stack, hands: u64, seed: u64) -> Report {
     let n = a.cfg.num_players.get();
-    let bb = a.cfg.bb as f64;
+    let bb = a.cfg.blinds.bb() as f64;
     let rows: Vec<(f64, f64, Counts)> = (0..hands)
         .into_par_iter()
         .map(|i| {
@@ -82,7 +82,7 @@ fn play(
     hero: usize,
     button: usize,
     deck: [Card; 52],
-    stacks: &[u32],
+    stacks: &[Stack],
     seed: u64,
 ) -> (i64, Counts) {
     let mut rng = SmallRng::seed_from_u64(seed);

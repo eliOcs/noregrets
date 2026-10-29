@@ -11,6 +11,7 @@ use crate::eval::{eval_hole_board, HandValue};
 use rand::rngs::SmallRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
 
 pub const MAX_PLAYERS: usize = 6;
 
@@ -94,22 +95,106 @@ impl std::fmt::Display for Players {
     }
 }
 
+/// A seat's starting chips. Never zero: a seat with nothing behind cannot
+/// post a blind or act. Command-line flags and serve requests are parsed
+/// into this, so the engine never deals a hand to an empty seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+#[repr(transparent)]
+pub struct Stack(NonZeroU32);
+
+impl Stack {
+    /// 100 big blinds at the standard blinds.
+    pub const DEFAULT: Stack = Stack::new(10_000).unwrap();
+
+    pub const fn new(chips: u32) -> Option<Stack> {
+        match NonZeroU32::new(chips) {
+            Some(n) => Some(Stack(n)),
+            None => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl From<Stack> for u32 {
+    fn from(s: Stack) -> u32 {
+        s.get()
+    }
+}
+
+impl TryFrom<u32> for Stack {
+    type Error = String;
+
+    fn try_from(chips: u32) -> Result<Stack, String> {
+        Stack::new(chips).ok_or_else(|| "a stack must hold at least one chip".to_string())
+    }
+}
+
+impl std::str::FromStr for Stack {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Stack, String> {
+        let chips: u32 = s.parse().map_err(|_| format!("'{s}' is not a number of chips"))?;
+        Stack::try_from(chips)
+    }
+}
+
+impl std::fmt::Display for Stack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// The forced bets. The small blind is at least one chip and at most the
+/// big blind, so the minimum raise is never zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Blinds {
+    sb: u32,
+    bb: u32,
+}
+
+impl Blinds {
+    pub const STANDARD: Blinds = Blinds { sb: 50, bb: 100 };
+
+    pub fn new(sb: u32, bb: u32) -> Result<Blinds, String> {
+        if sb == 0 || sb > bb {
+            return Err(format!("blinds {sb}/{bb}: need 0 < small blind <= big blind"));
+        }
+        Ok(Blinds { sb, bb })
+    }
+
+    #[inline(always)]
+    pub fn sb(self) -> u32 {
+        self.sb
+    }
+
+    #[inline(always)]
+    pub fn bb(self) -> u32 {
+        self.bb
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HandConfig {
     pub num_players: Players,
-    pub stack: u32,
-    pub sb: u32,
-    pub bb: u32,
+    pub stack: Stack,
+    pub blinds: Blinds,
+}
+
+impl HandConfig {
+    /// The usual table: `num_players` seats of `stack` at 50/100.
+    pub fn new(num_players: Players, stack: Stack) -> HandConfig {
+        HandConfig { num_players, stack, blinds: Blinds::STANDARD }
+    }
 }
 
 impl Default for HandConfig {
     fn default() -> Self {
-        HandConfig {
-            num_players: Players::SIX,
-            stack: 10_000,
-            sb: 50,
-            bb: 100,
-        }
+        HandConfig::new(Players::SIX, Stack::DEFAULT)
     }
 }
 
@@ -164,7 +249,7 @@ impl Hand {
         cfg: &HandConfig,
         button: usize,
         deck: [Card; 52],
-        stacks: &[u32],
+        stacks: &[Stack],
     ) -> Hand {
         let n = cfg.num_players.get();
         assert!((2..=MAX_PLAYERS).contains(&n));
@@ -180,7 +265,7 @@ impl Hand {
         let mut h = Hand {
             n,
             button,
-            bb: cfg.bb,
+            bb: cfg.blinds.bb(),
             holes,
             board: [Card::FILL; 5],
             board_len: 0,
@@ -192,10 +277,12 @@ impl Hand {
             street: Street::Preflop,
             to_act: None,
             current_bet: 0,
-            min_raise_inc: cfg.bb,
+            min_raise_inc: cfg.blinds.bb(),
             n_raises: 0,
         };
-        h.stacks[..n].copy_from_slice(stacks);
+        for (have, s) in h.stacks.iter_mut().zip(stacks) {
+            *have = s.get();
+        }
 
         // Blinds. Heads-up: the button posts the small blind.
         let (sb_seat, bb_seat) = if n == 2 {
@@ -203,8 +290,8 @@ impl Hand {
         } else {
             ((button + 1) % n, (button + 2) % n)
         };
-        h.commit(sb_seat, cfg.sb.min(h.stacks[sb_seat]));
-        h.commit(bb_seat, cfg.bb.min(h.stacks[bb_seat]));
+        h.commit(sb_seat, cfg.blinds.sb().min(h.stacks[sb_seat]));
+        h.commit(bb_seat, cfg.blinds.bb().min(h.stacks[bb_seat]));
         h.current_bet = h.street_commit[..n].iter().copied().max().unwrap();
 
         h.to_act = h.next_actor(bb_seat);
@@ -631,6 +718,10 @@ mod tests {
         deck
     }
 
+    fn stacks(chips: &[u32]) -> Vec<Stack> {
+        chips.iter().map(|&c| Stack::new(c).unwrap()).collect()
+    }
+
     fn cfg(n: usize) -> HandConfig {
         HandConfig {
             num_players: Players::new(n).unwrap(),
@@ -647,6 +738,20 @@ mod tests {
         // Blueprint files keep the usize encoding, and loading checks it.
         assert_eq!(bincode::serialize(&Players::SIX).unwrap(), bincode::serialize(&6usize).unwrap());
         assert!(bincode::deserialize::<Players>(&bincode::serialize(&7usize).unwrap()).is_err());
+    }
+
+    #[test]
+    fn stacks_and_blinds_that_cannot_be_played_do_not_exist() {
+        assert_eq!(Stack::new(0), None);
+        assert!("0".parse::<Stack>().is_err());
+        assert!("-5".parse::<Stack>().is_err());
+        assert_eq!("20000".parse::<Stack>(), Ok(Stack::new(20_000).unwrap()));
+        assert!(serde_json::from_str::<Stack>("0").is_err());
+        assert_eq!(std::mem::size_of::<Option<Stack>>(), 4);
+
+        assert!(Blinds::new(0, 100).is_err());
+        assert!(Blinds::new(100, 50).is_err());
+        assert_eq!(Blinds::new(50, 100), Ok(Blinds::STANDARD));
     }
 
     #[test]
@@ -770,7 +875,7 @@ mod tests {
     fn side_pot_short_stack_only_wins_main_pot() {
         // p0 short with the best hand, p1 second best, p2 worst.
         let deck = deck_with_front("As Ah Ks Kh 2c 7d 3c 9d Jh 4s 8c");
-        let mut h = Hand::new_with_stacks(&cfg(3), 0, deck, &[1_000, 5_000, 5_000]);
+        let mut h = Hand::new_with_stacks(&cfg(3), 0, deck, &stacks(&[1_000, 5_000, 5_000]));
         assert_eq!(h.to_act(), Some(0));
         h.apply(RaiseTo(1_000)); // short stack all-in
         h.apply(RaiseTo(5_000)); // SB shoves over
@@ -804,7 +909,7 @@ mod tests {
     #[test]
     fn short_allin_raise_must_be_called() {
         let deck = deck_with_front("2c 7d 2d 7h As Ah 3c 9d Jh 4s 8c");
-        let mut h = Hand::new_with_stacks(&cfg(3), 0, deck, &[5_000, 5_000, 250]);
+        let mut h = Hand::new_with_stacks(&cfg(3), 0, deck, &stacks(&[5_000, 5_000, 250]));
         h.apply(RaiseTo(200)); // p0 min-raises
         h.apply(Fold); // SB folds
         assert_eq!(h.raise_bounds(), Some((250, 250))); // BB can only shove short
@@ -914,8 +1019,8 @@ mod tests {
             for _ in 0..2_000 {
                 let mut deck = fresh_deck();
                 deck.shuffle(&mut rng);
-                let stacks: Vec<u32> =
-                    (0..n).map(|_| rng.random_range(200..20_000)).collect();
+                let stacks: Vec<Stack> =
+                    (0..n).map(|_| Stack::new(rng.random_range(200..20_000)).unwrap()).collect();
                 let button = rng.random_range(0..n);
                 let mut h = Hand::new_with_stacks(&cfg(n), button, deck, &stacks);
                 let mut steps = 0;
@@ -937,7 +1042,7 @@ mod tests {
                 let u = h.utilities();
                 assert_eq!(u[..n].iter().sum::<i64>(), 0, "not zero-sum");
                 for p in 0..n {
-                    assert!(u[p] >= -(stacks[p] as i64), "lost more than stack");
+                    assert!(u[p] >= -(stacks[p].get() as i64), "lost more than stack");
                 }
             }
         }

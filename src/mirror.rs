@@ -18,7 +18,7 @@
 use crate::abstraction::{AbsAction, Abstraction, TOKEN_STREET_SEP};
 use crate::cards::Card;
 use crate::cfr::Blueprint;
-use crate::engine::{Hand, HandConfig, PlayerAction};
+use crate::engine::{Hand, HandConfig, PlayerAction, Stack};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::borrow::Cow;
@@ -112,7 +112,7 @@ pub struct Mirror {
 
 impl Mirror {
     /// `cfg.stack` is the training depth the shadow plays at.
-    pub fn new(cfg: &HandConfig, button: usize, deck: [Card; 52], stacks: &[u32]) -> Mirror {
+    pub fn new(cfg: &HandConfig, button: usize, deck: [Card; 52], stacks: &[Stack]) -> Mirror {
         Mirror {
             real: Hand::new_with_stacks(cfg, button, deck, stacks),
             shadow: Hand::new(cfg, button, deck),

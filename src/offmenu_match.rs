@@ -45,7 +45,7 @@ pub struct Report {
 
 pub fn run(bot: &Bot, cfg: &HandConfig, resize: Resize, hands: u64, seed: u64) -> Report {
     let n = cfg.num_players.get();
-    let bb = cfg.bb as f64;
+    let bb = cfg.blinds.bb() as f64;
     let rows: Vec<(f64, f64, u64, u64)> = (0..hands)
         .into_par_iter()
         .map(|i| {

@@ -125,7 +125,7 @@ pub fn play(policy: &Policy, opts: &PlayOpts) {
                 println!("  {} shows {}", seat_name(p), cards_str(&table.real.hole(p)));
             }
         }
-        let bb = opts.cfg.bb as f64;
+        let bb = opts.cfg.blinds.bb() as f64;
         session_bb += u[HUMAN] as f64 / bb;
         println!(
             "Result: you {}{} chips  |  session: {:+.1} BB\n",

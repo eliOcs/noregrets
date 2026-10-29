@@ -279,7 +279,7 @@ fn play_one(
         };
         table.apply_abs(a, &policy.abs);
     }
-    table.real.utilities()[hero] as f64 / cfg.bb as f64 * 1000.0
+    table.real.utilities()[hero] as f64 / cfg.blinds.bb() as f64 * 1000.0
 }
 
 pub fn mean_ci(results: &[f64]) -> (f64, f64) {
@@ -350,7 +350,7 @@ pub fn run_crossplay(
                 let a = pol.act_blueprint(&table.shadow, &table.hist, &mut rng);
                 table.apply_abs(a, &pol.abs);
             }
-            table.real.utilities()[hero] as f64 / cfg.bb as f64 * 1000.0
+            table.real.utilities()[hero] as f64 / cfg.blinds.bb() as f64 * 1000.0
         })
         .collect();
 
@@ -418,7 +418,7 @@ pub fn run_eval_search(
                     tracker.exclude(table.real.board());
                 }
             }
-            table.real.utilities()[hero] as f64 / cfg.bb as f64 * 1000.0
+            table.real.utilities()[hero] as f64 / cfg.blinds.bb() as f64 * 1000.0
         })
         .collect();
 
@@ -512,7 +512,7 @@ pub fn run_eval_paired_policies(
                 tracker.exclude(table.real.board());
             }
         }
-        table.real.utilities()[hero] as f64 / cfg.bb as f64 * 1000.0
+        table.real.utilities()[hero] as f64 / cfg.blinds.bb() as f64 * 1000.0
     };
 
     let results: Vec<f64> = (0..hands)
@@ -583,7 +583,7 @@ mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
     use crate::cfr::Blueprint;
-    use crate::engine::{Players, Street};
+    use crate::engine::{Players, Stack, Street};
 
     #[test]
     fn baseline_ranges_have_their_documented_sizes() {
@@ -760,12 +760,7 @@ mod tests {
             cache_cap: 100_000,
             menu: crate::abstraction::MenuShape::Wide,
         });
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 20_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(20_000).unwrap());
         let mut t = Table::new(&cfg, 0, crate::cards::fresh_deck());
         // Drive the SHADOW all-in directly (simulating accumulated
         // off-tree mapping drift) while the real hand stays shallow.

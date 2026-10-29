@@ -278,7 +278,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
     let hero = n0.hand.to_act().expect("node ends at a decision");
     let acts = bot.abs.abstract_actions(&n0.hand);
     let k = acts.len();
-    let bb = cfg.bb as f64;
+    let bb = cfg.blinds.bb() as f64;
     let rows: Vec<Deal> = (0..deals)
         .into_par_iter()
         .map(|i| {

@@ -185,7 +185,7 @@ pub fn merge(mut bp: Blueprint, records: &Records, alpha: f64) -> (Blueprint, u6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Players;
+    use crate::engine::{Players, Stack};
     use crate::abstraction::{AbsConfig, Abstraction, Centroids};
     use crate::cfr::{TrainConfig, Trainer};
     use std::sync::Arc;
@@ -260,12 +260,7 @@ mod tests {
         };
         let cents = Centroids::train(&abs_cfg, 300, 5);
         let abs = Arc::new(Abstraction::with_centroids(abs_cfg, Some(cents)));
-        let hand = HandConfig {
-            num_players: Players::TWO,
-            stack: 1_000,
-            sb: 50,
-            bb: 100,
-        };
+        let hand = HandConfig::new(Players::TWO, Stack::new(1_000).unwrap());
         let tcfg = TrainConfig {
             hand: hand.clone(),
             prune_after: u64::MAX,

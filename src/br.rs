@@ -422,7 +422,7 @@ pub fn run_br(
     search: Option<crate::bot::SearchParams>,
 ) -> BrResult {
     let n = cfg.num_players.get();
-    let bb = cfg.bb as f64;
+    let bb = cfg.blinds.bb() as f64;
     let lbr = Lbr::new(policy, runouts);
     let combos = all_combos();
     let train_cfg = crate::cfr::TrainConfig {
@@ -538,7 +538,7 @@ pub fn run_br(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Players;
+    use crate::engine::{Players, Stack};
     use crate::abstraction::{AbsConfig, Abstraction};
     use crate::cards::parse_cards;
     use crate::cfr::Blueprint;
@@ -589,12 +589,7 @@ mod tests {
 
     /// HU table checked down to the river, p1 shoves, p0 to act.
     fn river_facing_shove(front: &str, policy: &Policy) -> Table {
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut t = Table::new(&cfg, 0, rigged_deck(front));
         for _ in 0..6 {
             t.apply_abs(AbsAction::CheckCall, &policy.abs);
@@ -607,12 +602,7 @@ mod tests {
 
     /// HU table checked to p0's turn decision facing p1's shove.
     fn turn_facing_shove(front: &str, policy: &Policy) -> Table {
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut t = Table::new(&cfg, 0, rigged_deck(front));
         for _ in 0..4 {
             t.apply_abs(AbsAction::CheckCall, &policy.abs);
@@ -673,12 +663,7 @@ mod tests {
     #[test]
     fn br_plans_multistreet_value_extraction_with_the_nuts() {
         let policy = empty_policy();
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut t = Table::new(&cfg, 0, rigged_deck("2c 7d As Ks Qs Js Ts 3h 4d"));
         for _ in 0..4 {
             t.apply_abs(AbsAction::CheckCall, &policy.abs);
@@ -740,12 +725,7 @@ mod tests {
     #[test]
     fn build_rejects_wrong_streets_and_multiway() {
         let policy = empty_policy();
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let t = Table::new(&cfg, 0, rigged_deck("As Ks 2c 7d Qs Js Ts 3h 4d"));
         // Preflop: must refuse.
         assert!(SubgameBr::build(&policy, &t.shadow, 1).is_none());

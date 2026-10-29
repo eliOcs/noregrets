@@ -263,7 +263,7 @@ fn play_one_aivat(
     }
 
     let u = table.real.utilities()[hero] as f64;
-    (u + corr) / cfg.bb as f64 * 1000.0
+    (u + corr) / cfg.blinds.bb() as f64 * 1000.0
 }
 
 /// AIVAT evaluation: identical matchup and estimand to `run_eval`, but each
@@ -308,7 +308,7 @@ pub fn run_eval_aivat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Players;
+    use crate::engine::{Players, Stack};
     use crate::abstraction::{AbsConfig, Abstraction};
     use crate::cards::parse_cards;
     use crate::cfr::Blueprint;
@@ -354,12 +354,7 @@ mod tests {
                 idx += 1;
             }
         }
-        let cfg = HandConfig {
-            num_players: Players::TWO,
-            stack: 2_000,
-            sb: 50,
-            bb: 100,
-        };
+        let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&cfg, 0, deck);
         for _ in 0..6 {
             h.apply(PlayerAction::CheckCall); // check down to the river
