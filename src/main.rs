@@ -47,6 +47,23 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use table::Baseline;
 
+/// `serve --also PATH:STACK`: another blueprint and the stack it was
+/// trained at.
+#[derive(Debug, Clone)]
+struct DepthBlueprint {
+    path: String,
+    stack: Stack,
+}
+
+impl std::str::FromStr for DepthBlueprint {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<DepthBlueprint, String> {
+        let (path, stack) = s.rsplit_once(':').ok_or_else(|| format!("expected PATH:STACK, got '{s}'"))?;
+        Ok(DepthBlueprint { path: path.to_string(), stack: stack.parse()? })
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "pluribus",
@@ -267,7 +284,7 @@ enum Cmd {
         /// (repeatable). Each request uses the blueprint nearest the acting
         /// seat's effective stack.
         #[arg(long)]
-        also: Vec<String>,
+        also: Vec<DepthBlueprint>,
         /// Re-solve postflop decisions online (every served blueprint, any
         /// format; compact ones stay memory-mapped).
         #[arg(long)]
@@ -1097,12 +1114,8 @@ fn main() {
                 serve::Served { bot, cfg, search: Some(serve::Searcher { policy, params, train_cfg }) }
             };
             let mut served = vec![load(&blueprint, stack)];
-            for spec in &also {
-                let (path, depth) = spec
-                    .rsplit_once(':')
-                    .and_then(|(p, d)| Some((p, d.parse::<Stack>().ok()?)))
-                    .unwrap_or_else(|| die(&format!("--also expects PATH:STACK, got '{spec}'")));
-                served.push(load(path, depth));
+            for b in &also {
+                served.push(load(&b.path, b.stack));
             }
             if served.iter().any(|s| s.cfg.num_players != served[0].cfg.num_players) {
                 die("every served blueprint must have the same number of players");
