@@ -1859,3 +1859,16 @@ Verdict: adopted, i.e. `serve --blueprint it-800m.nrc+r800-sw.nrc --search
 --bucket-table buckets.bin --also it-800m-80bb.nrc+r80-sw.nrc:8000`;
 2.43 GB compact on disk for all four files, peak RSS ≈1.8 GB with both
 depths loaded.
+
+### One served file: the re-solved preflop merged into it-800m
+
+`merge-preflop --base it-800m.bin --preflop ref/r800-sw.bin` (18,384,400
+preflop strategies replaced, 13,662,170 new, 153,940,543 in all), then
+`compact`: `it-800m-r.nrc`, 1,151 MB, sha256 `02f1bbb9…`. Over 24,759
+decisions from 3,000 self-played hands (every street; a third of the
+hands take uniformly random preflop actions to widen the tree) it answers
+identically to `it-800m.nrc+r800-sw.nrc` when the base is re-compacted
+with the current rounding, and within one 1/255 step of the gated pair
+(6.8% of decisions differ, max 0.0039): `it-800m.nrc` predates the
+per-action rounding of 6cd5190, which keeps actions the old
+largest-remainder rounding dropped.

@@ -327,9 +327,16 @@ pluribus action-ev --blueprint it-800m.nrc --line "r3 f f a f" --hands all --dea
 ### `refine-preflop` / `merge-preflop`
 Re-solve preflop with the base blueprint's postflop play frozen for every
 player; each traversal plays postflop out from the base. Writes a
-preflop-only blueprint, served over the base as `--blueprint BASE+PREFLOP`
-(any command that loads a serving bot) or merged into a training
-blueprint with `merge-preflop --base B.bin --preflop P.bin --out M.bin`.
+preflop-only blueprint, merged into the base for serving:
+
+```bash
+pluribus merge-preflop --base it-800m.bin --preflop r800-sw.bin --out it-800m-r.bin
+pluribus compact --blueprint it-800m-r.bin --out it-800m-r.nrc
+```
+
+Experiments can skip the merge with `--blueprint BASE+PREFLOP` (any
+command that loads a serving bot, either part compact), which answers
+exactly as the merged file does.
 Measured worse multiway than its base (BASELINES, 28 Oct 2026): the base's
 postflop was trained against the old preflop ranges.
 
@@ -355,13 +362,12 @@ and at 120bb nothing measurable (BASELINES, 28 Oct 2026).
 abstraction). Ranges are rebuilt from each request's actions, the solve is
 rooted at the current decision, and answers carry `"source":"search"`.
 Search reads strategies through the same store as the blueprint answers,
-so compact blueprints and `BASE+PREFLOP` overlays (either part compact)
-stay memory-mapped: the served set below is 2.4 GB on disk and peaks at
-1.8 GB resident with search on.
+so compact blueprints stay memory-mapped: the 100bb blueprint with its
+re-solved preflop is one 1.15 GB file, and with the 80bb one beside it
+the process peaks at 1.8 GB resident with search on.
 
 ```bash
-pluribus serve --blueprint it-800m.nrc+r800-sw.nrc --search --bucket-table buckets.bin \
-  --also it-800m-80bb.nrc+r80-sw.nrc:8000
+pluribus serve --blueprint it-800m-r.nrc --search --bucket-table buckets.bin
 ```
 
 Preflop answers come from the blueprint, except facing an all-in that a
