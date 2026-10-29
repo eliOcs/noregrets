@@ -42,11 +42,12 @@ pub struct SubgameBr<'a> {
     /// and rank-sorted valid combos for the O(N) showdown sweep.
     rank: Vec<Vec<Option<HandValue>>>,
     sorted: Vec<Vec<u32>>,
-    /// Bot bucket per combo on the current (pre-chance) board; 0 for combos
-    /// blocked by the board.
-    bucket_now: Vec<u16>,
-    /// Bot bucket per combo per candidate river (empty on a complete board).
-    bucket_river: Vec<Vec<u16>>,
+    /// Bot bucket per combo on the current (pre-chance) board; `None` for
+    /// combos the board blocks.
+    bucket_now: Vec<Option<u16>>,
+    /// Bot bucket per combo per candidate river (empty on a complete
+    /// board); `None` for combos that board blocks.
+    bucket_river: Vec<Vec<Option<u16>>>,
 }
 
 impl SubgameBr<'_> {
@@ -105,16 +106,10 @@ impl SubgameBr<'_> {
                 rank.push(rk);
                 sorted.push(st);
                 let b5 = board5.to_vec();
-                let buckets: Vec<u16> = combos
+                let buckets: Vec<Option<u16>> = combos
                     .iter()
                     .enumerate()
-                    .map(|(ci, c)| {
-                        if valid(c) && c[0] != r && c[1] != r {
-                            bucket_for(c, &b5, ci)
-                        } else {
-                            0
-                        }
-                    })
+                    .map(|(ci, c)| (valid(c) && c[0] != r && c[1] != r).then(|| bucket_for(c, &b5, ci)))
                     .collect();
                 bucket_river.push(buckets);
             }
@@ -126,10 +121,10 @@ impl SubgameBr<'_> {
             sorted.push(st);
         }
 
-        let bucket_now: Vec<u16> = combos
+        let bucket_now: Vec<Option<u16>> = combos
             .iter()
             .enumerate()
-            .map(|(ci, c)| if valid(c) { bucket_for(c, &board, ci) } else { 0 })
+            .map(|(ci, c)| valid(c).then(|| bucket_for(c, &board, ci)))
             .collect();
 
         Some(SubgameBr {
@@ -294,13 +289,15 @@ impl SubgameBr<'_> {
         let n = acts.len();
         let mut sigma = vec![0.0; NUM_COMBOS * n];
         let mut cache: Vec<Option<Option<Vec<f64>>>> = Vec::new();
-        for ci in 0..NUM_COMBOS {
-            let b = buckets[ci] as usize;
+        // Blocked combos have no bucket and no reach; their row stays zero.
+        for (ci, &bucket) in buckets.iter().enumerate() {
+            let Some(bucket) = bucket else { continue };
+            let b = bucket as usize;
             if cache.len() <= b {
                 cache.resize(b + 1, None);
             }
             if cache[b].is_none() {
-                let s = self.policy.strategies.get(buckets[ci], hist).and_then(|s| {
+                let s = self.policy.strategies.get(bucket, hist).and_then(|s| {
                     if s.len() != n {
                         return None;
                     }
