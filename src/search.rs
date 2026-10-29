@@ -157,13 +157,13 @@ impl RangeTracker {
         &self.weights[seat]
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn weight(&self, seat: usize, hole: [Card; 2]) -> f64 {
         self.weights[seat][combo_index(hole[0], hole[1])]
     }
 
     /// Normalized probability of `hole` in `seat`'s tracked range.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn prob(&self, seat: usize, hole: [Card; 2]) -> f64 {
         let total: f64 = self.weights[seat].iter().sum();
         if total <= 0.0 {

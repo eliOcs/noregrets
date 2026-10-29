@@ -326,12 +326,12 @@ impl TurnSolver {
         self.nodes.len() - 1
     }
 
-    #[allow(dead_code)] // diagnostics + tests
+    #[cfg(test)]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn iterations(&self) -> u64 {
         self.iters
     }
@@ -451,7 +451,6 @@ impl TurnSolver {
     }
 
     /// Average strategy at the root for solver player 0's `hole`.
-    #[allow(dead_code)] // tests + future turn-play integration
     pub fn root_strategy(&self, hole: [Card; 2]) -> Option<(Vec<AbsAction>, Vec<f64>)> {
         let node = &self.nodes[self.root()];
         debug_assert_eq!(node.player, 0);

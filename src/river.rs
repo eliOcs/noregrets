@@ -449,7 +449,7 @@ impl RiverSolver {
             .collect()
     }
 
-    #[allow(dead_code)] // used by tests; useful for diagnostics
+    #[cfg(test)]
     pub fn iterations(&self) -> u64 {
         self.iters
     }

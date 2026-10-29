@@ -20,35 +20,6 @@ pub enum Category {
     StraightFlush = 8,
 }
 
-impl Category {
-    const ALL: [Category; 9] = [
-        Category::HighCard,
-        Category::Pair,
-        Category::TwoPair,
-        Category::Trips,
-        Category::Straight,
-        Category::Flush,
-        Category::FullHouse,
-        Category::Quads,
-        Category::StraightFlush,
-    ];
-
-    #[allow(dead_code)]
-    pub fn name(self) -> &'static str {
-        match self {
-            Category::HighCard => "High Card",
-            Category::Pair => "Pair",
-            Category::TwoPair => "Two Pair",
-            Category::Trips => "Three of a Kind",
-            Category::Straight => "Straight",
-            Category::Flush => "Flush",
-            Category::FullHouse => "Full House",
-            Category::Quads => "Four of a Kind",
-            Category::StraightFlush => "Straight Flush",
-        }
-    }
-}
-
 #[inline(always)]
 fn pack(cat: Category, ranks: &[u32]) -> u32 {
     let mut v = (cat as u32) << 20;
@@ -209,9 +180,20 @@ pub fn eval_hole_board(hole: &[Card; 2], board: &[Card]) -> u32 {
 }
 
 /// The category of a value returned by `eval7`.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn category(value: u32) -> Category {
-    Category::ALL[(value >> 20) as usize]
+    const ALL: [Category; 9] = [
+        Category::HighCard,
+        Category::Pair,
+        Category::TwoPair,
+        Category::Trips,
+        Category::Straight,
+        Category::Flush,
+        Category::FullHouse,
+        Category::Quads,
+        Category::StraightFlush,
+    ];
+    ALL[(value >> 20) as usize]
 }
 
 // ---------------------------------------------------------------------------

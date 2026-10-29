@@ -471,10 +471,6 @@ impl Hand {
     pub fn num_players(&self) -> usize {
         self.n
     }
-    #[allow(dead_code)]
-    pub fn button(&self) -> usize {
-        self.button
-    }
     pub fn to_act(&self) -> usize {
         self.to_act
     }
@@ -496,7 +492,6 @@ impl Hand {
     pub fn street_commit(&self, p: usize) -> u32 {
         self.street_commit[p]
     }
-    #[allow(dead_code)]
     pub fn hand_commit(&self, p: usize) -> u32 {
         self.hand_commit[p]
     }
@@ -506,14 +501,12 @@ impl Hand {
     pub fn folded(&self, p: usize) -> bool {
         self.seats[p] == Seat::Folded
     }
-    #[allow(dead_code)]
     pub fn all_in(&self, p: usize) -> bool {
         self.seats[p] == Seat::AllIn
     }
     pub fn n_raises(&self) -> u8 {
         self.n_raises
     }
-    #[allow(dead_code)]
     pub fn big_blind(&self) -> u32 {
         self.bb
     }

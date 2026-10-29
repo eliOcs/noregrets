@@ -214,7 +214,7 @@ pub fn parse_card(s: &str) -> Option<Card> {
 }
 
 /// Parse space-separated cards, e.g. "As Kd 7c".
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn parse_cards(s: &str) -> Option<Vec<Card>> {
     s.split_whitespace().map(parse_card).collect()
 }

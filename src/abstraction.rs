@@ -32,8 +32,6 @@ impl BetSize {
     pub const POT: BetSize = BetSize(4);
     pub const P150: BetSize = BetSize(5);
     pub const P200: BetSize = BetSize(6);
-    #[allow(dead_code)] // in no menu; probes reach it as "r7"
-    pub const P300: BetSize = BetSize(7);
 
     /// The size at this index into `BET_SIZES`, if there is one.
     pub fn new(index: u8) -> Option<BetSize> {
@@ -396,7 +394,6 @@ pub struct Abstraction {
 
 impl Abstraction {
     /// Raw-equity bucketing on every street (no k-means centroids).
-    #[allow(dead_code)]
     pub fn new(cfg: AbsConfig) -> Self {
         Self::with_centroids(cfg, None)
     }
@@ -742,17 +739,17 @@ impl Abstraction {
         table[crate::search::combo_index(map(hole[0]), map(hole[1]))]
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn cache_len(&self) -> usize {
         self.cache.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn river_tables_len(&self) -> usize {
         self.river_boards.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn canon_len(&self) -> usize {
         self.canon.len()
     }

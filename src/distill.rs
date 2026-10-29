@@ -238,11 +238,11 @@ mod tests {
         assert_eq!(d, vec![0.1, 0.4, 0.0, 0.3, 0.0, 0.2]);
 
         // Mass on actions the full menu lacks is dropped and renormalized.
-        let slim2 = vec![CheckCall, Bet(BetSize::P300)];
+        let slim2 = vec![CheckCall, Bet(BetSize::new(7).unwrap())];
         let d2 = expand_dist(&slim2, &[0.5, 0.5], &full).unwrap();
         assert!((d2[1] - 1.0).abs() < 1e-12);
         // No surviving mass → None.
-        assert!(expand_dist(&[Bet(BetSize::P300)], &[1.0], &full).is_none());
+        assert!(expand_dist(&[Bet(BetSize::new(7).unwrap())], &[1.0], &full).is_none());
     }
 
     /// End to end on a tiny blueprint: collection records searched postflop

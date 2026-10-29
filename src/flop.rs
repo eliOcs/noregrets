@@ -337,17 +337,17 @@ impl<'a> FlopSolver<'a> {
         self.nodes.len() - 1
     }
 
-    #[allow(dead_code)] // diagnostics + tests
+    #[cfg(test)]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn leaf_count(&self) -> usize {
         self.leaves.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn iterations(&self) -> u64 {
         self.iters
     }
@@ -403,7 +403,7 @@ impl<'a> FlopSolver<'a> {
 
     /// Per-combo expected chip value at the root, normalized by compatible
     /// opponent mass (as in the turn solver).
-    #[allow(dead_code)] // used by tests and value bootstrapping
+    #[cfg(test)]
     pub fn root_values(&self, u: usize) -> Vec<f64> {
         let opp = &self.range[1 - u];
         let mut total = 0.0f64;

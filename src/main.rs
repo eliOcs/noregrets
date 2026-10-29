@@ -21,7 +21,7 @@ mod net;
 mod play;
 mod preflop;
 // Exercised by its own tests; no command drives the bandit yet.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 mod portfolio;
 mod river;
 mod search;
