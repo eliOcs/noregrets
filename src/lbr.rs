@@ -79,13 +79,8 @@ impl Lbr<'_> {
     fn action_prob(&self, ci: usize, board: &[Card], hist: &[u8], acts: &[AbsAction], idx: usize) -> f64 {
         let mut rng = SmallRng::seed_from_u64(0x1B12_5EED ^ ci as u64);
         let bucket = self.policy.abs.bucket(self.combos[ci], board, &mut rng);
-        if let Some(s) = self.policy.strategies.get(bucket, hist) {
-            if s.len() == acts.len() {
-                let total: f64 = s.iter().map(|&x| x as f64).sum();
-                if total > 0.0 {
-                    return s[idx] as f64 / total;
-                }
-            }
+        if let Some(w) = self.policy.strategies.lookup(bucket, hist, acts).fits() {
+            return w.p(idx);
         }
         if acts[idx] == AbsAction::CheckCall {
             1.0

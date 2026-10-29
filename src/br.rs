@@ -297,16 +297,7 @@ impl SubgameBr<'_> {
                 cache.resize(b + 1, None);
             }
             if cache[b].is_none() {
-                let s = self.policy.strategies.get(bucket, hist).and_then(|s| {
-                    if s.len() != n {
-                        return None;
-                    }
-                    let total: f64 = s.iter().map(|&x| x as f64).sum();
-                    if total <= 0.0 {
-                        return None;
-                    }
-                    Some(s.iter().map(|&x| x as f64 / total).collect::<Vec<f64>>())
-                });
+                let s = self.policy.strategies.lookup(bucket, hist, acts).fits().map(|w| w.probs());
                 cache[b] = Some(s);
             }
             match cache[b].as_ref().unwrap() {

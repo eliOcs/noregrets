@@ -30,6 +30,74 @@ pub trait Strategies: Send + Sync {
     /// borrowed where they are stored as floats, decoded otherwise.
     fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>>;
     fn len(&self) -> usize;
+
+    /// The stored weights at an infoset, read against the menu the hand
+    /// offers there. Every decision path goes through this, so they all
+    /// agree on what counts as a usable strategy.
+    fn lookup(&self, bucket: u16, hist: &[u8], menu: &[AbsAction]) -> Stored<'_> {
+        let Some(w) = self.get(bucket, hist) else {
+            return Stored::Unseen;
+        };
+        if w.len() != menu.len() {
+            return Stored::OtherMenu(w.len());
+        }
+        let total: f64 = w.iter().map(|&x| x as f64).sum();
+        if total > 0.0 {
+            Stored::Fits(Weights { w, total })
+        } else {
+            Stored::Unseen
+        }
+    }
+}
+
+/// What a blueprint holds at an infoset, checked against the menu.
+pub enum Stored<'a> {
+    Fits(Weights<'a>),
+    /// Never visited in training, or visited with no weight on any action.
+    Unseen,
+    /// Weights for a menu of this many actions: the blueprint was trained
+    /// with a different bet abstraction.
+    OtherMenu(usize),
+}
+
+impl<'a> Stored<'a> {
+    pub fn fits(self) -> Option<Weights<'a>> {
+        match self {
+            Stored::Fits(w) => Some(w),
+            Stored::Unseen | Stored::OtherMenu(_) => None,
+        }
+    }
+}
+
+/// Stored weights with one entry per menu action and a positive total.
+/// Only `Strategies::lookup` makes one, so indexing it by a menu position
+/// cannot go out of range.
+pub struct Weights<'a> {
+    w: Cow<'a, [f32]>,
+    total: f64,
+}
+
+impl Weights<'_> {
+    /// The probability of the action at menu position `i`.
+    pub fn p(&self, i: usize) -> f64 {
+        self.w[i] as f64 / self.total
+    }
+
+    /// Probabilities in menu order, summing to 1.
+    pub fn probs(&self) -> Vec<f64> {
+        self.w.iter().map(|&x| x as f64 / self.total).collect()
+    }
+
+    /// The menu position with the most weight; the last on ties.
+    pub fn argmax(&self) -> usize {
+        let mut best = 0;
+        for (i, &x) in self.w.iter().enumerate() {
+            if x >= self.w[best] {
+                best = i;
+            }
+        }
+        best
+    }
 }
 
 impl Strategies for Blueprint {
@@ -182,13 +250,11 @@ impl Mirror {
         // is never consumed; a fixed seed keeps answers reproducible anyway.
         let mut rng = SmallRng::seed_from_u64(0);
         let bucket = bot.abs.bucket(shadow.hole(p), shadow.board(), &mut rng);
-        let stored = bot.strategies.get(bucket, &self.hist).filter(|s| s.len() == acts.len());
-        let total: f64 = stored.as_deref().into_iter().flatten().map(|&x| x as f64).sum();
-        let (probs, source) = match stored {
-            Some(s) if total > 0.0 => (s.iter().map(|&x| x as f64 / total).collect(), Source::Blueprint),
+        let (probs, source) = match bot.strategies.lookup(bucket, &self.hist, &acts).fits() {
+            Some(w) => (w.probs(), Source::Blueprint),
             // Unseen (or menu-mismatched) infosets check/call, like the
             // engine's own blueprint player.
-            _ => {
+            None => {
                 let call = acts.iter().position(|&a| a == AbsAction::CheckCall);
                 let mut probs = vec![0.0; acts.len()];
                 probs[call.expect("check/call is always legal")] = 1.0;

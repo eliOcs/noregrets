@@ -12,7 +12,7 @@
 use crate::abstraction::{AbsAction, AbsConfig, Abstraction, BetSize};
 use crate::cfr::{sample_index, Blueprint, LeafCfg, Spine, TrainConfig, Trainer};
 use crate::engine::{Hand, PlayerAction, Players, Street};
-use crate::mirror::Strategies;
+use crate::mirror::{Stored, Strategies};
 use crate::search::RangeTracker;
 use crate::table::RoundRoot;
 use crate::valuenet::ValueNet;
@@ -298,19 +298,12 @@ impl Policy {
         let bucket = self.abs.bucket(h.hole(p), h.board(), rng);
         let street = h.street() as usize;
         LOOKUPS[street].fetch_add(1, Ordering::Relaxed);
-        if let Some(s) = self.strategies.get(bucket, hist) {
-            if s.len() == acts.len() {
-                let probs: Vec<f64> = s.iter().map(|&x| x as f64).collect();
-                let total: f64 = probs.iter().sum();
-                if total > 0.0 {
-                    let norm: Vec<f64> = probs.iter().map(|x| x / total).collect();
-                    return (acts, norm);
-                }
-            } else {
-                // Found the infoset but the stored menu differs: a bet-menu
-                // drift between training and this binary, not an unseen spot.
-                note_menu_mismatch(s.len(), acts.len());
-            }
+        match self.strategies.lookup(bucket, hist, &acts) {
+            Stored::Fits(w) => return (acts, w.probs()),
+            Stored::Unseen => {}
+            // Found the infoset but the stored menu differs: a bet-menu
+            // drift between training and this binary, not an unseen spot.
+            Stored::OtherMenu(stored) => note_menu_mismatch(stored, acts.len()),
         }
         FALLBACKS[street].fetch_add(1, Ordering::Relaxed);
         let mut probs = vec![0.0; acts.len()];

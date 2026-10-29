@@ -152,12 +152,8 @@ pub fn all_classes() -> Vec<String> {
 pub fn dist(bot: &Bot, h: &Hand, hist: &[u8], rng: &mut SmallRng) -> (Vec<AbsAction>, Vec<f64>, bool) {
     let acts = bot.abs.abstract_actions(h);
     let bucket = bot.abs.bucket(h.hole(h.to_act().expect("a live decision")), h.board(), rng);
-    if let Some(s) = bot.strategies.get(bucket, hist) {
-        let total: f32 = s.iter().sum();
-        if s.len() == acts.len() && total > 0.0 {
-            let p = s.iter().map(|&x| (x / total) as f64).collect();
-            return (acts, p, true);
-        }
+    if let Some(w) = bot.strategies.lookup(bucket, hist, &acts).fits() {
+        return (acts, w.probs(), true);
     }
     let mut p = vec![0.0; acts.len()];
     p[acts.iter().position(|&a| a == AbsAction::CheckCall).unwrap()] = 1.0;

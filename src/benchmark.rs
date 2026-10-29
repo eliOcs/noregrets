@@ -251,16 +251,9 @@ pub fn replay_hand(
             let bucket = policy
                 .abs
                 .bucket(table.shadow.hole(seat), table.shadow.board(), &mut rng);
-            let strat = policy.strategies.get(bucket, &table.hist);
+            let strat = policy.strategies.lookup(bucket, &table.hist, &acts).fits();
             let (prob, top1) = match (idx, strat) {
-                (Some(i), Some(s)) if s.len() == acts.len() => {
-                    let argmax = s
-                        .iter()
-                        .enumerate()
-                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                        .map(|(j, _)| j);
-                    (Some(s[i] as f64), argmax == Some(i))
-                }
+                (Some(i), Some(w)) => (Some(w.p(i)), w.argmax() == i),
                 _ => (None, false),
             };
             decisions.push(Decision {
