@@ -5,10 +5,10 @@
 //! seat 0 before building infoset keys, which keeps the infoset space aligned.
 //!
 //! Infoset key layout: [bucket_lo, bucket_hi, history tokens...].
-//! History tokens come from AbsAction::token(), with TOKEN_STREET_SEP between
+//! History tokens come from AbsAction::token(), with Token::StreetSep between
 //! streets. Node action order == Abstraction::abstract_actions() order.
 
-use crate::abstraction::{AbsAction, AbsConfig, Abstraction, Centroids, TOKEN_LEAF, TOKEN_STREET_SEP};
+use crate::abstraction::{AbsAction, AbsConfig, Abstraction, Centroids, Token, TOKEN_LEAF};
 use crate::cards::fresh_deck;
 use crate::engine::{Hand, HandConfig, PlayerAction, Players, Street, MAX_PLAYERS};
 use dashmap::DashMap;
@@ -162,7 +162,7 @@ pub struct Spine {
     /// (seat, real action) for each step taken in the round so far.
     pub steps: Vec<(usize, PlayerAction)>,
     /// The abstract token recorded for each step (shadow mapping).
-    pub tokens: Vec<u8>,
+    pub tokens: Vec<Token>,
 }
 
 /// Mixture weight for spine-targeted sampling: at a non-traverser spine
@@ -175,7 +175,7 @@ impl Spine {
     /// If the node (`hist` after `h`'s history, menu `acts`) lies on the
     /// spine: (index of the spine action in `acts`, its real concrete
     /// action, whether the actor is the hero).
-    fn step_at(&self, hist: &[u8], h: &Hand, acts: &[AbsAction]) -> Option<(usize, PlayerAction, bool)> {
+    fn step_at(&self, hist: &[Token], h: &Hand, acts: &[AbsAction]) -> Option<(usize, PlayerAction, bool)> {
         let k = hist.len().checked_sub(self.base_len)?;
         if k >= self.steps.len() || hist[self.base_len..] != self.tokens[..k] {
             return None;
@@ -301,11 +301,11 @@ const MAX_ACTS: usize = 16;
 /// to a heap key.
 const KEY_BUF: usize = 96;
 
-pub fn make_key(bucket: u16, hist: &[u8]) -> InfoKey {
+pub fn make_key(bucket: u16, hist: &[Token]) -> InfoKey {
     let mut k = Vec::with_capacity(2 + hist.len());
     k.push(bucket as u8);
     k.push((bucket >> 8) as u8);
-    k.extend_from_slice(hist);
+    k.extend(hist.iter().map(|&t| t as u8));
     k.into_boxed_slice()
 }
 
@@ -339,7 +339,7 @@ impl Trainer {
         &self,
         frozen: &dyn crate::mirror::Strategies,
         h: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         traverser: usize,
         rng: &mut SmallRng,
     ) -> f64 {
@@ -366,7 +366,7 @@ impl Trainer {
             h.apply(self.abs.concrete(&h, a));
             hist.push(a.token());
             if !h.is_terminal() && h.street() != street {
-                hist.push(TOKEN_STREET_SEP);
+                hist.push(Token::StreetSep);
             }
         }
         h.utilities()[traverser] as f64
@@ -501,7 +501,7 @@ impl Trainer {
     pub fn run_subgame(
         &self,
         root: &Hand,
-        root_hist: &[u8],
+        root_hist: &[Token],
         time_ms: u64,
         max_iters: u64,
         sampler: Option<&RootSampler<'_>>,
@@ -545,7 +545,7 @@ impl Trainer {
     fn traverse(
         &self,
         h: &Hand,
-        hist: &mut Vec<u8>,
+        hist: &mut Vec<Token>,
         traverser: usize,
         weight: f64,
         prune_ok: bool,
@@ -576,7 +576,9 @@ impl Trainer {
         let key: &[u8] = if hist.len() + 2 <= KEY_BUF {
             kbuf[0] = bucket as u8;
             kbuf[1] = (bucket >> 8) as u8;
-            kbuf[2..2 + hist.len()].copy_from_slice(hist);
+            for (b, &t) in kbuf[2..].iter_mut().zip(hist.iter()) {
+                *b = t as u8;
+            }
             &kbuf[..2 + hist.len()]
         } else {
             heap_key = make_key(bucket, hist);
@@ -614,7 +616,7 @@ impl Trainer {
             let depth = hist.len();
             hist.push(acts[si].token());
             if !child.is_terminal() && child.street() != h.street() {
-                hist.push(TOKEN_STREET_SEP);
+                hist.push(Token::StreetSep);
             }
             let v = self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, rng);
             hist.truncate(depth);
@@ -656,7 +658,7 @@ impl Trainer {
                 let depth = hist.len();
                 hist.push(a.token());
                 if !child.is_terminal() && child.street() != h.street() {
-                    hist.push(TOKEN_STREET_SEP);
+                    hist.push(Token::StreetSep);
                 }
                 utils[i] =
                     self.traverse(child, hist, traverser, weight, prune_ok, model_opp, rng);
@@ -702,7 +704,7 @@ impl Trainer {
             child.apply(self.abs.concrete(h, a));
             hist.push(a.token());
             if !child.is_terminal() && child.street() != h.street() {
-                hist.push(TOKEN_STREET_SEP);
+                hist.push(Token::StreetSep);
             }
             self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, rng)
         } else {
@@ -781,7 +783,7 @@ impl Trainer {
             child.apply(self.child_action(h, a, idx, step));
             hist.push(a.token());
             if !child.is_terminal() && child.street() != h.street() {
-                hist.push(TOKEN_STREET_SEP);
+                hist.push(Token::StreetSep);
             }
             // No truncation needed: the nearest traverser ancestor restores hist.
             let v = ratio * self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, rng);
@@ -809,7 +811,7 @@ impl Trainer {
     fn leaf_value(
         &self,
         h: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         traverser: usize,
         weight: f64,
         lc: &LeafCfg,
@@ -871,7 +873,7 @@ impl Trainer {
     fn leaf_rollout(
         &self,
         h: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         biases: &[usize; MAX_PLAYERS],
         traverser: usize,
         lc: &LeafCfg,
@@ -892,7 +894,7 @@ impl Trainer {
             h.apply(lc.abs.concrete(&h, a));
             hist.push(a.token());
             if !h.is_terminal() && h.street() != street_before {
-                hist.push(TOKEN_STREET_SEP);
+                hist.push(Token::StreetSep);
             }
         }
         h.utilities()[traverser] as f64
@@ -906,7 +908,7 @@ impl Trainer {
         let mut n = 0;
         let mut s = Vec::new();
         for mut e in self.nodes.iter_mut() {
-            let postflop = e.key()[2..].contains(&TOKEN_STREET_SEP);
+            let postflop = e.key()[2..].contains(&(Token::StreetSep as u8));
             if !postflop {
                 continue;
             }
@@ -937,7 +939,7 @@ impl Trainer {
             .sum()
     }
 
-    fn sweep_node(&self, h: &Hand, hist: &mut Vec<u8>, p: usize, b: u16, reach: f64, weight: f64) -> usize {
+    fn sweep_node(&self, h: &Hand, hist: &mut Vec<Token>, p: usize, b: u16, reach: f64, weight: f64) -> usize {
         if h.is_terminal() || h.street() != Street::Preflop || h.folded(p) || h.all_in(p) {
             return 0;
         }
@@ -970,7 +972,7 @@ impl Trainer {
     }
 
     /// Current (regret-matching) strategy for an infoset, if visited.
-    pub fn current_strategy(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f64>> {
+    pub fn current_strategy(&self, bucket: u16, hist: &[Token]) -> Option<Vec<f64>> {
         let node = self.nodes.get(&make_key(bucket, hist))?;
         let mut s = Vec::new();
         regret_matching(&node.regret, &mut s);
@@ -978,7 +980,7 @@ impl Trainer {
     }
 
     /// Normalized average strategy for an infoset, if visited.
-    pub fn avg_strategy(&self, bucket: u16, hist: &[u8]) -> Option<Vec<f64>> {
+    pub fn avg_strategy(&self, bucket: u16, hist: &[Token]) -> Option<Vec<f64>> {
         let key = make_key(bucket, hist);
         let node = self.nodes.get(&key)?;
         normalize(&node.strat)
@@ -1061,11 +1063,11 @@ struct Checkpoint {
     nodes: Vec<(Vec<u8>, Node)>,
 }
 
-fn leaf_key(bucket: u16, hist: &[u8]) -> InfoKey {
+fn leaf_key(bucket: u16, hist: &[Token]) -> InfoKey {
     let mut k = Vec::with_capacity(3 + hist.len());
     k.push(bucket as u8);
     k.push((bucket >> 8) as u8);
-    k.extend_from_slice(hist);
+    k.extend(hist.iter().map(|&t| t as u8));
     k.push(TOKEN_LEAF);
     k.into_boxed_slice()
 }
@@ -1133,7 +1135,7 @@ pub struct Blueprint {
 }
 
 impl Blueprint {
-    pub fn get(&self, bucket: u16, hist: &[u8]) -> Option<&Vec<f32>> {
+    pub fn get(&self, bucket: u16, hist: &[Token]) -> Option<&Vec<f32>> {
         let key = make_key(bucket, hist);
         self.strategies.get(key.as_ref() as &[u8])
     }
@@ -1352,7 +1354,7 @@ mod tests {
 
     #[test]
     fn key_roundtrip_bucket_encoding() {
-        let k = make_key(168, &[2, 15, 1]);
+        let k = make_key(168, &[Token::AllIn, Token::StreetSep, Token::CheckCall]);
         assert_eq!(&*k, &[168, 0, 2, 15, 1]);
         let k = make_key(300, &[]);
         assert_eq!(&*k, &[300u16 as u8, 1]);
@@ -1437,7 +1439,7 @@ mod tests {
         let mut h1 = h0.clone();
         h1.apply(PlayerAction::CheckCall); // p1 to act
         let acts1 = abs.abstract_actions(&h1);
-        let base = vec![7u8, 7, TOKEN_STREET_SEP];
+        let base = vec![Token::BetPot, Token::BetPot, Token::StreetSep];
         let bet = *acts1.iter().find(|a| matches!(a, AbsAction::Bet(_))).unwrap();
         let spine = Spine {
             hero: 1,
@@ -1584,7 +1586,7 @@ mod tests {
         let postflop_before = t
             .nodes
             .iter()
-            .filter(|e| e.key()[2..].contains(&TOKEN_STREET_SEP))
+            .filter(|e| e.key()[2..].contains(&(Token::StreetSep as u8)))
             .filter(|e| e.strat.iter().any(|&x| x != 0.0))
             .count();
         assert_eq!(postflop_before, 0, "postflop strat accumulated without a snapshot");
@@ -1595,7 +1597,7 @@ mod tests {
         let postflop_after = t
             .nodes
             .iter()
-            .filter(|e| e.key()[2..].contains(&TOKEN_STREET_SEP))
+            .filter(|e| e.key()[2..].contains(&(Token::StreetSep as u8)))
             .filter(|e| normalize(&e.strat).is_some())
             .count();
         assert_eq!(postflop_after, n);

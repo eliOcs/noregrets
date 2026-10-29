@@ -194,7 +194,7 @@ pub fn build(
         let hist = &d.key[2..];
         let street = hist
             .iter()
-            .filter(|&&t| t == crate::abstraction::TOKEN_STREET_SEP)
+            .filter(|&&t| t == crate::abstraction::Token::StreetSep as u8)
             .count()
             .min(3);
         let slot = &mut stats.agree[street];
@@ -227,7 +227,7 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abstraction::{AbsConfig, TOKEN_STREET_SEP};
+    use crate::abstraction::{AbsConfig, Token};
     use serde_json::json;
 
     fn abs_small() -> Abstraction {
@@ -284,7 +284,7 @@ mod tests {
             .map(|d| {
                 d.key[2..]
                     .iter()
-                    .filter(|&&t| t == TOKEN_STREET_SEP)
+                    .filter(|&&t| t == Token::StreetSep as u8)
                     .count()
             })
             .collect();

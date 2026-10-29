@@ -16,7 +16,7 @@
 //! other seats fold on their first action), LBR alternating between the two
 //! blind seats. Reported in mbb/hand: 0 = unexploitable by this probe.
 
-use crate::abstraction::AbsAction;
+use crate::abstraction::{AbsAction, Token};
 use crate::bot::Policy;
 use crate::cards::{fresh_deck, Card};
 use crate::engine::{Hand, HandConfig, PlayerAction};
@@ -76,7 +76,7 @@ impl Lbr<'_> {
     /// Probability the bot plays `acts[idx]` at this infoset holding `combo`
     /// — mirrors `Policy::act_blueprint` exactly, including its check/call
     /// fallback on unseen or mismatched infosets.
-    fn action_prob(&self, ci: usize, board: &[Card], hist: &[u8], acts: &[AbsAction], idx: usize) -> f64 {
+    fn action_prob(&self, ci: usize, board: &[Card], hist: &[Token], acts: &[AbsAction], idx: usize) -> f64 {
         let mut rng = SmallRng::seed_from_u64(0x1B12_5EED ^ ci as u64);
         let bucket = self.policy.abs.bucket(self.combos[ci], board, &mut rng);
         if let Some(w) = self.policy.strategies.lookup(bucket, hist, acts).fits() {
@@ -91,7 +91,7 @@ impl Lbr<'_> {
 
     /// Bayes-update the bot's range after watching it take `acts[taken_idx]`
     /// at the (pre-action) state `h` with history `hist`.
-    pub fn observe(&self, range: &mut BotRange, h: &Hand, hist: &[u8], acts: &[AbsAction], taken_idx: usize) {
+    pub fn observe(&self, range: &mut BotRange, h: &Hand, hist: &[Token], acts: &[AbsAction], taken_idx: usize) {
         let board = h.board().to_vec();
         range.weights = range
             .weights

@@ -16,7 +16,7 @@
 //! bound in expectation. Given a seed the probe is deterministic, so two
 //! code versions can be compared on identical deals (paired differences).
 
-use crate::abstraction::{AbsAction, TOKEN_STREET_SEP};
+use crate::abstraction::{AbsAction, Token};
 use crate::bot::Policy;
 use crate::cards::{fresh_deck, Card};
 use crate::engine::{Hand, HandConfig, Street};
@@ -144,7 +144,7 @@ impl SubgameBr<'_> {
     /// tracked range `bot_range` and the table history `hist`. Returns the
     /// argmax action and its exact expected value (net chips from here on,
     /// normalized by the bot's compatible range mass).
-    pub fn action(&self, h: &Hand, hist: &[u8], hole: [Card; 2], bot_range: &[f64]) -> (AbsAction, f64) {
+    pub fn action(&self, h: &Hand, hist: &[Token], hole: [Card; 2], bot_range: &[f64]) -> (AbsAction, f64) {
         let hero_ci = crate::search::combo_index(hole[0], hole[1]);
         let mut blocked = [false; 52];
         blocked[hole[0].index()] = true;
@@ -170,7 +170,7 @@ impl SubgameBr<'_> {
             let mut hist2 = hist.to_vec();
             hist2.push(a.token());
             if child.street() != h.street() && !child.is_terminal() {
-                hist2.push(TOKEN_STREET_SEP);
+                hist2.push(Token::StreetSep);
             }
             let v = self.walk(&child, &hist2, &reach, river_ix);
             let mass = self.compat_mass(&reach, hero_ci);
@@ -198,7 +198,7 @@ impl SubgameBr<'_> {
     /// Exact expectimax: hero (probe) maximizes per combo, the bot mixes by
     /// its blueprint strategy per combo, chance enumerates rivers. Returns
     /// hero values per hero combo, weighted by compatible bot reach.
-    fn walk(&self, h: &Hand, hist: &[u8], reach: &[f64], river_ix: Option<usize>) -> Vec<f64> {
+    fn walk(&self, h: &Hand, hist: &[Token], reach: &[f64], river_ix: Option<usize>) -> Vec<f64> {
         if h.is_terminal() {
             return self.terminal_values(h, reach, river_ix);
         }
@@ -227,14 +227,14 @@ impl SubgameBr<'_> {
 
         let acts = self.policy.abs.abstract_actions(h);
         let hero_to_act = h.to_act() != Some(self.bot_seat);
-        let mut children: Vec<(Hand, Vec<u8>)> = Vec::with_capacity(acts.len());
+        let mut children: Vec<(Hand, Vec<Token>)> = Vec::with_capacity(acts.len());
         for &a in &acts {
             let mut child = h.clone();
             child.apply(self.policy.abs.concrete(h, a));
             let mut hist2 = hist.to_vec();
             hist2.push(a.token());
             if child.street() != h.street() && !child.is_terminal() {
-                hist2.push(TOKEN_STREET_SEP);
+                hist2.push(Token::StreetSep);
             }
             children.push((child, hist2));
         }
@@ -277,7 +277,7 @@ impl SubgameBr<'_> {
     /// Per-combo blueprint strategy for the bot at this node, mirroring
     /// `Policy::act_blueprint`'s fallback: unseen or mismatched infosets
     /// play pure check/call.
-    fn bot_sigma(&self, hist: &[u8], acts: &[AbsAction], river_ix: Option<usize>) -> Vec<f64> {
+    fn bot_sigma(&self, hist: &[Token], acts: &[AbsAction], river_ix: Option<usize>) -> Vec<f64> {
         let buckets = match river_ix {
             Some(ri) if !self.bucket_river.is_empty() => &self.bucket_river[ri],
             _ => &self.bucket_now,

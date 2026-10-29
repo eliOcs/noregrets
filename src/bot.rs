@@ -9,7 +9,7 @@
 //! CFR+ solver in `river.rs`; everything else solves to the end of the hand
 //! with MCCFR.
 
-use crate::abstraction::{AbsAction, AbsConfig, Abstraction, BetSize};
+use crate::abstraction::{AbsAction, AbsConfig, Abstraction, BetSize, Token};
 use crate::cfr::{sample_index, Blueprint, LeafCfg, Spine, TrainConfig, Trainer};
 use crate::engine::{Hand, PlayerAction, Players, Street};
 use crate::mirror::{Stored, Strategies};
@@ -212,10 +212,10 @@ impl SearchSession {
     /// values, and continual resolving keeps those fixed across the
     /// opponent's own actions (the gadget offers "opt out at river entry"),
     /// so villain-led rivers use them too instead of rollout estimates.
-    fn river_alt(&self, h: &Hand, hist: &[u8]) -> Option<Vec<f64>> {
+    fn river_alt(&self, h: &Hand, hist: &[Token]) -> Option<Vec<f64>> {
         let carry = self.carry.as_ref()?;
         let suffix = hist.get(self.root_hist_len..)?;
-        let mut parts = suffix.split(|&t| t == crate::abstraction::TOKEN_STREET_SEP);
+        let mut parts = suffix.split(|&t| t == crate::abstraction::Token::StreetSep);
         let line = parts.next()?;
         // Exactly one separator: the turn→river transition.
         parts.next()?;
@@ -292,7 +292,7 @@ impl Policy {
     /// The blueprint's full action distribution at the current infoset —
     /// exactly what `act_blueprint` samples from, including its check/call
     /// fallback on unseen or mismatched infosets.
-    pub fn blueprint_dist(&self, h: &Hand, hist: &[u8], rng: &mut SmallRng) -> (Vec<AbsAction>, Vec<f64>) {
+    pub fn blueprint_dist(&self, h: &Hand, hist: &[Token], rng: &mut SmallRng) -> (Vec<AbsAction>, Vec<f64>) {
         let p = h.to_act().expect("a blueprint decision needs a live hand");
         let acts = self.abs.abstract_actions(h);
         let bucket = self.abs.bucket(h.hole(p), h.board(), rng);
@@ -319,7 +319,7 @@ impl Policy {
     /// blueprint. `hist` is the abstract action history (tokens).
     /// Falls back to check/call on infosets the blueprint never visited or
     /// whose action menu no longer matches.
-    pub fn act_blueprint(&self, h: &Hand, hist: &[u8], rng: &mut SmallRng) -> AbsAction {
+    pub fn act_blueprint(&self, h: &Hand, hist: &[Token], rng: &mut SmallRng) -> AbsAction {
         let (acts, probs) = self.blueprint_dist(h, hist, rng);
         acts[sample_index(&probs, rng)]
     }
@@ -341,7 +341,7 @@ impl Policy {
         &self,
         real: &Hand,
         shadow: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         params: SearchParams,
         train_cfg: &TrainConfig,
         tracker: Option<&RangeTracker>,
@@ -435,7 +435,7 @@ impl Policy {
         &self,
         real: &Hand,
         shadow: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         params: SearchParams,
         train_cfg: &TrainConfig,
         tracker: Option<&RangeTracker>,
@@ -572,7 +572,7 @@ impl Policy {
     fn turn_dist(
         &self,
         h: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         tracker: &RangeTracker,
         params: SearchParams,
         session: Option<&mut SearchSession>,
@@ -607,7 +607,7 @@ impl Policy {
     fn river_dist(
         &self,
         h: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         tracker: &RangeTracker,
         params: SearchParams,
         session: Option<&SearchSession>,
@@ -652,7 +652,7 @@ impl Policy {
     fn estimate_alt(
         &self,
         h: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         tracker: &RangeTracker,
         villain: usize,
         rng: &mut SmallRng,
@@ -721,7 +721,7 @@ impl Policy {
                         sim.apply(self.abs.concrete(&sim, a));
                         hist2.push(a.token());
                         if !sim.is_terminal() && sim.street() != street_before {
-                            hist2.push(crate::abstraction::TOKEN_STREET_SEP);
+                            hist2.push(crate::abstraction::Token::StreetSep);
                         }
                     }
                     if sim.is_terminal() {
@@ -743,7 +743,7 @@ pub fn resolve_subgame(
     abs: Arc<Abstraction>,
     train_cfg: &TrainConfig,
     root: &Hand,
-    root_hist: &[u8],
+    root_hist: &[Token],
     params: SearchParams,
     tracker: Option<&RangeTracker>,
     leaf: Option<LeafCfg>,
@@ -893,15 +893,15 @@ mod tests {
         let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&hand_cfg, 0, deck);
         let abs = abs_small();
-        let mut hist: Vec<u8> = Vec::new();
+        let mut hist: Vec<Token> = Vec::new();
 
         // p0 calls, p1 checks -> flop; checks to the river; p1 shoves.
-        let do_act = |h: &mut Hand, hist: &mut Vec<u8>, a: AbsAction, abs: &Abstraction| {
+        let do_act = |h: &mut Hand, hist: &mut Vec<Token>, a: AbsAction, abs: &Abstraction| {
             let street_before = h.street();
             h.apply(abs.concrete(h, a));
             hist.push(a.token());
             if !h.is_terminal() && h.street() != street_before {
-                hist.push(crate::abstraction::TOKEN_STREET_SEP);
+                hist.push(crate::abstraction::Token::StreetSep);
             }
         };
         do_act(&mut h, &mut hist, AbsAction::CheckCall, &abs); // p0 limps
@@ -1086,14 +1086,14 @@ mod tests {
             },
             abs.clone(),
         );
-        let mut hist: Vec<u8> = Vec::new();
+        let mut hist: Vec<Token> = Vec::new();
         let mut tracker = RangeTracker::new(2);
-        let act = |h: &mut Hand, hist: &mut Vec<u8>, a: AbsAction| {
+        let act = |h: &mut Hand, hist: &mut Vec<Token>, a: AbsAction| {
             let street_before = h.street();
             h.apply(abs.concrete(h, a));
             hist.push(a.token());
             if !h.is_terminal() && h.street() != street_before {
-                hist.push(crate::abstraction::TOKEN_STREET_SEP);
+                hist.push(crate::abstraction::Token::StreetSep);
             }
         };
         for _ in 0..3 {
@@ -1317,7 +1317,7 @@ mod tests {
         // A second street separator can never occur after a turn resolve;
         // such a line is off the carry and must miss cleanly.
         let mut two_seps = table.hist.clone();
-        two_seps.push(crate::abstraction::TOKEN_STREET_SEP);
+        two_seps.push(crate::abstraction::Token::StreetSep);
         assert!(session.river_alt(&table.real, &two_seps).is_none());
 
         // And the river decision itself completes through the gadget path.
@@ -1548,7 +1548,7 @@ mod tests {
         // Play to the flop: button calls, BB checks.
         let mut rng = SmallRng::seed_from_u64(77);
         let mut h = Hand::new(&hand_cfg, 0, fresh_deck());
-        let mut hist: Vec<u8> = Vec::new();
+        let mut hist: Vec<Token> = Vec::new();
         let mut tracker = RangeTracker::new(2);
         for a in [AbsAction::CheckCall, AbsAction::CheckCall] {
             tracker.observe(h.to_act().unwrap(), a, &h, &hist, &bp, &abs);
@@ -1556,7 +1556,7 @@ mod tests {
             h.apply(abs.concrete(&h, a));
             hist.push(a.token());
             if h.street() != street_before {
-                hist.push(crate::abstraction::TOKEN_STREET_SEP);
+                hist.push(crate::abstraction::Token::StreetSep);
                 tracker.exclude(h.board());
             }
         }

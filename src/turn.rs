@@ -15,7 +15,7 @@
 //! per-combo expected chip values, the training targets for the belief-state
 //! value network.
 
-use crate::abstraction::{AbsAction, Abstraction, BetSize};
+use crate::abstraction::{AbsAction, Abstraction, BetSize, Token};
 use crate::cards::Card;
 use crate::engine::{Hand, Street};
 use crate::eval::{eval_hole_board, HandValue};
@@ -55,7 +55,7 @@ enum Terminal {
 struct ChanceNode {
     kids: Vec<Kid>,
     /// Action tokens from the resolve root to this street close.
-    path: Vec<u8>,
+    path: Vec<Token>,
     /// Linear-weighted player-1 CFV sums at each river child,
     /// flattened [river][combo] — the continual-resolving carry.
     cfv: Vec<f64>,
@@ -69,7 +69,7 @@ struct ChanceNode {
 /// alternatives, replacing rollout estimates.
 pub struct TurnCarry {
     /// Betting line (action tokens since the resolve root) → chance index.
-    paths: std::collections::HashMap<Vec<u8>, usize>,
+    paths: std::collections::HashMap<Vec<Token>, usize>,
     rivers: Vec<Card>,
     /// [chance][river × NUM_COMBOS] normalized chips per combo.
     alt: Vec<Vec<f64>>,
@@ -80,7 +80,7 @@ impl TurnCarry {
     /// entry reached by `line` (turn tokens since the resolve root, without
     /// the street separator) with `river` dealt. None when the line is off
     /// the solve's slim tree.
-    pub fn alt_for(&self, line: &[u8], river: Card) -> Option<Vec<f64>> {
+    pub fn alt_for(&self, line: &[Token], river: Card) -> Option<Vec<f64>> {
         let &ci = self.paths.get(line)?;
         let ri = self.rivers.iter().position(|&r| r == river)?;
         Some(self.alt[ci][ri * NUM_COMBOS..(ri + 1) * NUM_COMBOS].to_vec())
@@ -216,7 +216,7 @@ impl TurnSolver {
             .collect()
     }
 
-    fn new_chance(&mut self, kids: Vec<Kid>, path: Vec<u8>) -> Kid {
+    fn new_chance(&mut self, kids: Vec<Kid>, path: Vec<Token>) -> Kid {
         let n = self.rivers.len();
         self.chances.push(ChanceNode {
             kids,
@@ -237,7 +237,7 @@ impl TurnSolver {
         seats: [usize; 2],
         keep: &[BetSize],
         river_ix: Option<usize>,
-        path: Vec<u8>,
+        path: Vec<Token>,
     ) -> Kid {
         if h.is_terminal() {
             if h.live_count() == 1 {
@@ -877,7 +877,7 @@ mod tests {
         );
 
         // A line outside the slim tree must miss cleanly.
-        assert!(carry.alt_for(&[13, 13, 13], river).is_none());
+        assert!(carry.alt_for(&[Token::Fold; 3], river).is_none());
         // A card that cannot be a river (already on board) must miss.
         let board_card = parse_cards("Qs").unwrap()[0];
         assert!(carry.alt_for(&[cc, cc], board_card).is_none());

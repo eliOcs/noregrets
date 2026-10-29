@@ -9,7 +9,7 @@
 //! these tracked ranges instead of uniformly — Pluribus's key search
 //! ingredient.
 
-use crate::abstraction::{AbsAction, Abstraction};
+use crate::abstraction::{AbsAction, Abstraction, Token};
 use crate::cards::Card;
 use crate::engine::{Hand, MAX_PLAYERS};
 use rand::rngs::SmallRng;
@@ -180,7 +180,7 @@ impl RangeTracker {
         seat: usize,
         taken: AbsAction,
         h: &Hand,
-        hist: &[u8],
+        hist: &[Token],
         bp: &dyn crate::mirror::Strategies,
         abs: &Abstraction,
     ) {

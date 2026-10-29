@@ -1917,7 +1917,7 @@ fn main() {
             for k in bp.strategies.keys() {
                 let seps = k[2..]
                     .iter()
-                    .filter(|&&t| t == abstraction::TOKEN_STREET_SEP)
+                    .filter(|&&t| t == abstraction::Token::StreetSep as u8)
                     .count()
                     .min(3);
                 by_street[seps] += 1;

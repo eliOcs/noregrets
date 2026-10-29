@@ -22,7 +22,7 @@
 //! (`buckets` sorted u64 canonical keys, then as many u16 buckets), read in
 //! place the same way, so serving needs one file and no table in memory.
 
-use crate::abstraction::{AbsConfig, BucketTable, CanonTable, Centroids};
+use crate::abstraction::{AbsConfig, BucketTable, CanonTable, Centroids, Token};
 use crate::cfr::{make_key, Blueprint};
 use crate::mirror::Strategies;
 use crate::engine::Players;
@@ -314,7 +314,7 @@ impl CanonTable for EmbeddedBuckets {
 }
 
 impl Strategies for CompactBlueprint {
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<std::borrow::Cow<'_, [f32]>> {
+    fn get(&self, bucket: u16, hist: &[Token]) -> Option<std::borrow::Cow<'_, [f32]>> {
         self.lookup(&make_key(bucket, hist))
             .map(|q| std::borrow::Cow::Owned(q.iter().map(|&b| b as f32).collect()))
     }
@@ -326,6 +326,7 @@ impl Strategies for CompactBlueprint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abstraction::{AbsAction, BetSize};
     use crate::cfr::StrategyMap;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
@@ -335,7 +336,9 @@ mod tests {
         let mut strategies = StrategyMap::default();
         while strategies.len() < entries {
             let bucket = rng.random_range(0..200u16);
-            let hist: Vec<u8> = (0..rng.random_range(0..12)).map(|_| rng.random_range(0..8)).collect();
+            let hist: Vec<Token> = (0..rng.random_range(0..12))
+                .map(|_| AbsAction::Bet(BetSize::new(rng.random_range(0..8)).unwrap()).token())
+                .collect();
             let n = rng.random_range(2..7);
             let weights: Vec<f32> = (0..n).map(|_| rng.random::<f32>()).collect();
             strategies.insert(make_key(bucket, &hist).to_vec(), weights);
@@ -466,7 +469,8 @@ mod tests {
         let c = roundtrip(&bp, "absent");
         let mut rng = SmallRng::seed_from_u64(3);
         for _ in 0..5_000 {
-            let key = make_key(rng.random_range(0..300u16), &[rng.random_range(0..16)]).to_vec();
+            let bucket = rng.random_range(0..300u16);
+            let key = vec![bucket as u8, (bucket >> 8) as u8, rng.random_range(0..16u8)];
             assert_eq!(c.lookup(&key).is_some(), bp.strategies.contains_key(&key));
         }
         assert_eq!(c.lookup(&[]), None, "before the first key");

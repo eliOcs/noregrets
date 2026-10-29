@@ -628,7 +628,7 @@ mod tests {
         actions.extend([Act::Fold; 3]);
         let req = request(STACK, UTG, ["Ah", "Kd"], &["2h", "9s", "Kc"], actions);
         let m = replay(&b, &cfg(), &spot(req), true).unwrap();
-        let tokens = m.hist().iter().filter(|&&t| t != crate::abstraction::TOKEN_STREET_SEP).count();
+        let tokens = m.hist().iter().filter(|&&t| t != crate::abstraction::Token::StreetSep).count();
         assert_eq!(m.log().len(), tokens);
         assert_eq!(m.log()[0].seat, UTG);
         assert!(m.log().iter().all(|o| o.shadow.street() == crate::engine::Street::Preflop));

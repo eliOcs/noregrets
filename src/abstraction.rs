@@ -50,9 +50,28 @@ impl BetSize {
     }
 }
 
-/// History tokens are u8: Fold=0, CheckCall=1, AllIn=2, Bet(i)=3+i, street separator=15.
-pub const TOKEN_STREET_SEP: u8 = 15;
+/// One step of an abstract action history: an action, or the end of a
+/// betting round. Each is one byte in an infoset key, and the values are
+/// part of the blueprint format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Token {
+    Fold = 0,
+    CheckCall = 1,
+    AllIn = 2,
+    Bet25 = 3,
+    Bet33 = 4,
+    Bet50 = 5,
+    Bet75 = 6,
+    BetPot = 7,
+    Bet150 = 8,
+    Bet200 = 9,
+    Bet300 = 10,
+    StreetSep = 15,
+}
+
 /// Key suffix marking a depth-limit leaf's continuation-strategy infoset.
+/// A key byte after the history, never a history token.
 pub const TOKEN_LEAF: u8 = 14;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,12 +83,22 @@ pub enum AbsAction {
 }
 
 impl AbsAction {
-    pub fn token(self) -> u8 {
+    pub fn token(self) -> Token {
+        const BETS: [Token; BET_SIZES.len()] = [
+            Token::Bet25,
+            Token::Bet33,
+            Token::Bet50,
+            Token::Bet75,
+            Token::BetPot,
+            Token::Bet150,
+            Token::Bet200,
+            Token::Bet300,
+        ];
         match self {
-            AbsAction::Fold => 0,
-            AbsAction::CheckCall => 1,
-            AbsAction::AllIn => 2,
-            AbsAction::Bet(size) => 3 + size.index(),
+            AbsAction::Fold => Token::Fold,
+            AbsAction::CheckCall => Token::CheckCall,
+            AbsAction::AllIn => Token::AllIn,
+            AbsAction::Bet(size) => BETS[size.index() as usize],
         }
     }
 }
@@ -253,7 +282,7 @@ pub fn strategic_fingerprint(
             sim.apply(sc.abs.concrete(&sim, a));
             hist2.push(a.token());
             if !sim.is_terminal() && sim.street() != street_before {
-                hist2.push(TOKEN_STREET_SEP);
+                hist2.push(Token::StreetSep);
             }
         }
         if sim.is_terminal() {
@@ -275,7 +304,7 @@ pub fn strategic_fingerprint(
 
 /// Standardized heads-up limped-pot state at this street start (hero =
 /// first to act) with the given hole/board, plus its history tokens.
-fn standard_state(hole: [Card; 2], board: &[Card]) -> (crate::engine::Hand, Vec<u8>) {
+fn standard_state(hole: [Card; 2], board: &[Card]) -> (crate::engine::Hand, Vec<Token>) {
     debug_assert!(board.len() == 3 || board.len() == 4);
     let cfg = crate::engine::HandConfig::new(Players::TWO, Stack::new(10_000).unwrap());
     let mut used = [false; 52];
@@ -300,12 +329,12 @@ fn standard_state(hole: [Card; 2], board: &[Card]) -> (crate::engine::Hand, Vec<
     }
     let mut h = crate::engine::Hand::new(&cfg, 0, deck);
     let mut hist = Vec::with_capacity(8);
-    let limp_check = |h: &mut crate::engine::Hand, hist: &mut Vec<u8>| {
+    let limp_check = |h: &mut crate::engine::Hand, hist: &mut Vec<Token>| {
         for _ in 0..2 {
             h.apply(crate::engine::PlayerAction::CheckCall);
             hist.push(AbsAction::CheckCall.token());
         }
-        hist.push(TOKEN_STREET_SEP);
+        hist.push(Token::StreetSep);
     };
     limp_check(&mut h, &mut hist); // limp + check -> flop
     if board.len() == 4 {

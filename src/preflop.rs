@@ -15,7 +15,7 @@
 //! CO, BTN, SB, BB. Tokens: `f` fold, `c` check/call, `rN` the menu's
 //! raise to BET_SIZES[N] of the pot, `a` all-in.
 
-use crate::abstraction::{AbsAction, Abstraction, BetSize, TOKEN_STREET_SEP};
+use crate::abstraction::{AbsAction, Abstraction, BetSize, Token};
 use crate::cards::{fresh_deck, Card, Rank, Suit};
 use crate::cfr::sample_index;
 use crate::engine::{Hand, HandConfig, Street};
@@ -34,7 +34,7 @@ pub const PREMIUMS: [&str; 6] = ["KK", "QQ", "JJ", "TT", "AKs", "AKo"];
 /// A preflop node: the hand after `line`, and the tokens it recorded.
 pub struct Node {
     pub hand: Hand,
-    pub hist: Vec<u8>,
+    pub hist: Vec<Token>,
     /// (seat, abstract action) for each step of the line.
     pub steps: Vec<(usize, AbsAction)>,
 }
@@ -149,7 +149,7 @@ pub fn all_classes() -> Vec<String> {
 
 /// The blueprint's normalized strategy at the player to act's infoset;
 /// check/call when the infoset is unseen or its menu differs (as served).
-pub fn dist(bot: &Bot, h: &Hand, hist: &[u8], rng: &mut SmallRng) -> (Vec<AbsAction>, Vec<f64>, bool) {
+pub fn dist(bot: &Bot, h: &Hand, hist: &[Token], rng: &mut SmallRng) -> (Vec<AbsAction>, Vec<f64>, bool) {
     let acts = bot.abs.abstract_actions(h);
     let bucket = bot.abs.bucket(h.hole(h.to_act().expect("a live decision")), h.board(), rng);
     if let Some(w) = bot.strategies.lookup(bucket, hist, &acts).fits() {
@@ -254,7 +254,7 @@ impl ActionEv {
 }
 
 /// Play the hand out with everyone on the blueprint; the hero's chips.
-fn playout(bot: &Bot, mut h: Hand, mut hist: Vec<u8>, hero: usize, rng: &mut SmallRng) -> i64 {
+fn playout(bot: &Bot, mut h: Hand, mut hist: Vec<Token>, hero: usize, rng: &mut SmallRng) -> i64 {
     while !h.is_terminal() {
         let (acts, p, _) = dist(bot, &h, &hist, rng);
         let a = acts[sample_index(&p, rng)];
@@ -262,7 +262,7 @@ fn playout(bot: &Bot, mut h: Hand, mut hist: Vec<u8>, hero: usize, rng: &mut Sma
         h.apply(bot.abs.concrete(&h, a));
         hist.push(a.token());
         if !h.is_terminal() && h.street() != street {
-            hist.push(TOKEN_STREET_SEP);
+            hist.push(Token::StreetSep);
         }
     }
     h.utilities()[hero]
@@ -309,7 +309,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
                     let mut hist = n.hist.clone();
                     hist.push(a.token());
                     if !child.is_terminal() && child.street() != Street::Preflop {
-                        hist.push(TOKEN_STREET_SEP);
+                        hist.push(Token::StreetSep);
                     }
                     let mut prng = SmallRng::seed_from_u64(play_seed);
                     playout(bot, child, hist, hero, &mut prng) as f64 / bb

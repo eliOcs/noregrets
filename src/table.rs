@@ -6,7 +6,7 @@
 //! If the two ever diverge structurally (rare all-in edge cases), the shadow
 //! resyncs to the real hand and the bot falls back gracefully on lookups.
 
-use crate::abstraction::{AbsAction, Abstraction, TOKEN_STREET_SEP};
+use crate::abstraction::{AbsAction, Abstraction, Token};
 use crate::bot::Policy;
 use crate::cards::{fresh_deck, Card, Rank};
 use crate::engine::{Hand, HandConfig, PlayerAction};
@@ -18,7 +18,7 @@ use rayon::prelude::*;
 pub struct Table {
     pub real: Hand,
     pub shadow: Hand,
-    pub hist: Vec<u8>,
+    pub hist: Vec<Token>,
     /// The current betting round so far: the real state when the round
     /// began and every concrete action taken since. Multiway search roots
     /// its subgame here (Pluribus's round-start rooting) instead of at
@@ -139,7 +139,7 @@ impl Table {
     fn push_token(&mut self, a: AbsAction, street_changed: bool) {
         self.hist.push(a.token());
         if street_changed && !self.shadow.is_terminal() {
-            self.hist.push(TOKEN_STREET_SEP);
+            self.hist.push(Token::StreetSep);
         }
     }
 
@@ -682,7 +682,7 @@ mod tests {
         // and stay structurally in sync.
         t.apply_concrete(PlayerAction::RaiseTo(317), &abs);
         assert_eq!(t.hist.len(), 1);
-        assert!(t.hist[0] >= 2, "expected a raise-family token");
+        assert!(!matches!(t.hist[0], Token::Fold | Token::CheckCall), "expected a raise-family token");
         assert_eq!(t.real.to_act(), t.shadow.to_act());
         assert_eq!(t.real.street(), t.shadow.street());
         // Real pot reflects the real bet.
@@ -699,7 +699,7 @@ mod tests {
         assert!(t.real.can_check()); // BB option
         t.apply_concrete(PlayerAction::Fold, &abs);
         // Engine treats fold-when-free as a check; history must agree.
-        assert_eq!(*t.hist.last().unwrap(), TOKEN_STREET_SEP);
+        assert_eq!(*t.hist.last().unwrap(), Token::StreetSep);
         assert!(!t.real.folded(2));
         assert_eq!(t.real.street(), crate::engine::Street::Flop);
     }

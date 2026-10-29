@@ -15,7 +15,7 @@
 //!   stack that has committed a training stack's worth) is "capped": the
 //!   shadow ignores their actions and they check/call from then on.
 
-use crate::abstraction::{AbsAction, Abstraction, TOKEN_STREET_SEP};
+use crate::abstraction::{AbsAction, Abstraction, Token};
 use crate::cards::Card;
 use crate::cfr::Blueprint;
 use crate::engine::{Hand, HandConfig, PlayerAction, Stack};
@@ -28,13 +28,13 @@ use std::sync::Arc;
 pub trait Strategies: Send + Sync {
     /// The stored (possibly unnormalized) action weights, if any:
     /// borrowed where they are stored as floats, decoded otherwise.
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>>;
+    fn get(&self, bucket: u16, hist: &[Token]) -> Option<Cow<'_, [f32]>>;
     fn len(&self) -> usize;
 
     /// The stored weights at an infoset, read against the menu the hand
     /// offers there. Every decision path goes through this, so they all
     /// agree on what counts as a usable strategy.
-    fn lookup(&self, bucket: u16, hist: &[u8], menu: &[AbsAction]) -> Stored<'_> {
+    fn lookup(&self, bucket: u16, hist: &[Token], menu: &[AbsAction]) -> Stored<'_> {
         let Some(w) = self.get(bucket, hist) else {
             return Stored::Unseen;
         };
@@ -101,7 +101,7 @@ impl Weights<'_> {
 }
 
 impl Strategies for Blueprint {
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>> {
+    fn get(&self, bucket: u16, hist: &[Token]) -> Option<Cow<'_, [f32]>> {
         Blueprint::get(self, bucket, hist).map(|s| Cow::Borrowed(s.as_slice()))
     }
     fn len(&self) -> usize {
@@ -111,7 +111,7 @@ impl Strategies for Blueprint {
 
 /// Strategies shared between a served bot and its search `Policy`.
 impl<T: Strategies + ?Sized> Strategies for Arc<T> {
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>> {
+    fn get(&self, bucket: u16, hist: &[Token]) -> Option<Cow<'_, [f32]>> {
         (**self).get(bucket, hist)
     }
     fn len(&self) -> usize {
@@ -129,8 +129,8 @@ pub struct PreflopOverlay {
 }
 
 impl Strategies for PreflopOverlay {
-    fn get(&self, bucket: u16, hist: &[u8]) -> Option<Cow<'_, [f32]>> {
-        if !hist.contains(&TOKEN_STREET_SEP) {
+    fn get(&self, bucket: u16, hist: &[Token]) -> Option<Cow<'_, [f32]>> {
+        if !hist.contains(&Token::StreetSep) {
             if let Some(s) = self.preflop.get(bucket, hist) {
                 return Some(s);
             }
@@ -168,13 +168,13 @@ pub struct Observed {
     pub seat: usize,
     pub action: AbsAction,
     pub shadow: Hand,
-    pub hist: Vec<u8>,
+    pub hist: Vec<Token>,
 }
 
 pub struct Mirror {
     pub real: Hand,
     shadow: Hand,
-    hist: Vec<u8>,
+    hist: Vec<Token>,
     log: Option<Vec<Observed>>,
 }
 
@@ -202,7 +202,7 @@ impl Mirror {
     }
 
     /// The shadow's abstract action history.
-    pub fn hist(&self) -> &[u8] {
+    pub fn hist(&self) -> &[Token] {
         &self.hist
     }
 
@@ -346,7 +346,7 @@ impl Mirror {
         self.shadow.apply(abs.concrete(&self.shadow, a));
         self.hist.push(a.token());
         if self.shadow.street() != street && !self.shadow.is_terminal() {
-            self.hist.push(TOKEN_STREET_SEP);
+            self.hist.push(Token::StreetSep);
         }
     }
 }
