@@ -22,12 +22,13 @@ pub enum Street {
 }
 
 impl Street {
-    pub fn next(self) -> Street {
+    /// The street after this one; the river is the last.
+    pub fn next(self) -> Option<Street> {
         match self {
-            Street::Preflop => Street::Flop,
-            Street::Flop => Street::Turn,
-            Street::Turn => Street::River,
-            Street::River => Street::River,
+            Street::Preflop => Some(Street::Flop),
+            Street::Flop => Some(Street::Turn),
+            Street::Turn => Some(Street::River),
+            Street::River => None,
         }
     }
 }
@@ -60,6 +61,24 @@ impl Default for HandConfig {
     }
 }
 
+/// Where one seat stands in the hand. Each seat is in exactly one state,
+/// so a seat cannot be both folded and all-in, and "has acted" exists only
+/// for seats that can still act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seat {
+    /// Still has chips behind and can act; `acted` is whether it has acted
+    /// since the street began or the last full raise reopened the action.
+    Active { acted: bool },
+    Folded,
+    AllIn,
+}
+
+impl Seat {
+    fn can_act(self) -> bool {
+        matches!(self, Seat::Active { .. })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Hand {
     n: usize,
@@ -72,9 +91,7 @@ pub struct Hand {
     stacks: [u32; MAX_PLAYERS],
     street_commit: [u32; MAX_PLAYERS],
     hand_commit: [u32; MAX_PLAYERS],
-    folded: [bool; MAX_PLAYERS],
-    allin: [bool; MAX_PLAYERS],
-    acted: [bool; MAX_PLAYERS],
+    seats: [Seat; MAX_PLAYERS],
     street: Street,
     to_act: usize,
     current_bet: u32,
@@ -119,9 +136,7 @@ impl Hand {
             stacks: [0; MAX_PLAYERS],
             street_commit: [0; MAX_PLAYERS],
             hand_commit: [0; MAX_PLAYERS],
-            folded: [false; MAX_PLAYERS],
-            allin: [false; MAX_PLAYERS],
-            acted: [false; MAX_PLAYERS],
+            seats: [Seat::Active { acted: false }; MAX_PLAYERS],
             street: Street::Preflop,
             to_act: 0,
             current_bet: 0,
@@ -151,28 +166,28 @@ impl Hand {
     pub fn apply(&mut self, a: PlayerAction) {
         debug_assert!(!self.terminal, "apply on terminal hand");
         let p = self.to_act;
-        debug_assert!(!self.folded[p] && !self.allin[p]);
+        debug_assert!(self.seats[p].can_act());
 
         match a {
             PlayerAction::Fold => {
                 // Folding with nothing to call is treated as a check.
                 if self.to_call() == 0 {
-                    self.acted[p] = true;
+                    self.mark_acted(p);
                 } else {
-                    self.folded[p] = true;
+                    self.seats[p] = Seat::Folded;
                 }
             }
             PlayerAction::CheckCall => {
                 let pay = self.to_call().min(self.stacks[p]);
                 self.commit(p, pay);
-                self.acted[p] = true;
+                self.mark_acted(p);
             }
             PlayerAction::RaiseTo(x) => match self.raise_bounds() {
                 None => {
                     // Raising impossible: degrade to call.
                     let pay = self.to_call().min(self.stacks[p]);
                     self.commit(p, pay);
-                    self.acted[p] = true;
+                    self.mark_acted(p);
                 }
                 Some((lo, hi)) => {
                     let x = x.clamp(lo, hi);
@@ -182,15 +197,15 @@ impl Hand {
                     if inc >= self.min_raise_inc {
                         // Full raise reopens action for everyone else.
                         self.min_raise_inc = inc;
-                        for q in 0..self.n {
-                            if q != p {
-                                self.acted[q] = false;
+                        for (q, seat) in self.seats[..self.n].iter_mut().enumerate() {
+                            if q != p && seat.can_act() {
+                                *seat = Seat::Active { acted: false };
                             }
                         }
                     }
                     self.current_bet = x;
                     self.n_raises = self.n_raises.saturating_add(1);
-                    self.acted[p] = true;
+                    self.mark_acted(p);
                 }
             },
         }
@@ -203,7 +218,7 @@ impl Hand {
         debug_assert!(self.terminal);
         let mut winnings = [0u64; MAX_PLAYERS];
 
-        let live: Vec<usize> = (0..self.n).filter(|&p| !self.folded[p]).collect();
+        let live: Vec<usize> = (0..self.n).filter(|&p| !self.folded(p)).collect();
         if live.len() == 1 {
             winnings[live[0]] = self.pot() as u64;
         } else {
@@ -353,7 +368,22 @@ impl Hand {
         self.street_commit[p] += amount;
         self.hand_commit[p] += amount;
         if self.stacks[p] == 0 {
-            self.allin[p] = true;
+            self.seats[p] = Seat::AllIn;
+        }
+    }
+
+    /// Record that `p` has acted. A seat that just went all-in stays all-in.
+    fn mark_acted(&mut self, p: usize) {
+        if let Seat::Active { acted } = &mut self.seats[p] {
+            *acted = true;
+        }
+    }
+
+    /// Whether seat `q` still owes an action this street.
+    fn needs_action(&self, q: usize) -> bool {
+        match self.seats[q] {
+            Seat::Active { acted } => !acted || self.street_commit[q] != self.current_bet,
+            Seat::Folded | Seat::AllIn => false,
         }
     }
 
@@ -361,10 +391,7 @@ impl Hand {
     fn next_actor(&self, from: usize) -> Option<usize> {
         for i in 1..=self.n {
             let q = (from + i) % self.n;
-            if !self.folded[q]
-                && !self.allin[q]
-                && (!self.acted[q] || self.street_commit[q] != self.current_bet)
-            {
+            if self.needs_action(q) {
                 return Some(q);
             }
         }
@@ -372,11 +399,7 @@ impl Hand {
     }
 
     fn street_over(&self) -> bool {
-        (0..self.n).all(|p| {
-            self.folded[p]
-                || self.allin[p]
-                || (self.acted[p] && self.street_commit[p] == self.current_bet)
-        })
+        (0..self.n).all(|p| !self.needs_action(p))
     }
 
     fn advance(&mut self, just_acted: usize) {
@@ -390,11 +413,10 @@ impl Hand {
                 .expect("street not over but nobody to act");
             return;
         }
-        if self.street == Street::River {
-            self.terminal = true;
-            return;
+        match self.street.next() {
+            Some(street) => self.begin_street(street),
+            None => self.terminal = true,
         }
-        self.begin_street(self.street.next());
     }
 
     fn begin_street(&mut self, street: Street) {
@@ -404,10 +426,14 @@ impl Hand {
         self.current_bet = 0;
         self.min_raise_inc = self.bb;
         self.n_raises = 0;
-        self.acted = [false; MAX_PLAYERS];
+        for seat in &mut self.seats {
+            if seat.can_act() {
+                *seat = Seat::Active { acted: false };
+            }
+        }
 
         let can_act = (0..self.n)
-            .filter(|&p| !self.folded[p] && !self.allin[p])
+            .filter(|&p| self.seats[p].can_act())
             .count();
         if can_act <= 1 {
             // No more betting possible: run the board out.
@@ -435,9 +461,7 @@ impl Hand {
     }
 
     fn fast_forward_to_showdown(&mut self) {
-        while self.street != Street::River {
-            self.street = self.street.next();
-        }
+        self.street = Street::River;
         self.deal_board_for_street();
         self.terminal = true;
     }
@@ -480,11 +504,11 @@ impl Hand {
         self.stacks[p]
     }
     pub fn folded(&self, p: usize) -> bool {
-        self.folded[p]
+        self.seats[p] == Seat::Folded
     }
     #[allow(dead_code)]
     pub fn all_in(&self, p: usize) -> bool {
-        self.allin[p]
+        self.seats[p] == Seat::AllIn
     }
     pub fn n_raises(&self) -> u8 {
         self.n_raises
@@ -509,7 +533,7 @@ impl Hand {
     }
 
     pub fn live_count(&self) -> usize {
-        (0..self.n).filter(|&p| !self.folded[p]).count()
+        (0..self.n).filter(|&p| !self.folded(p)).count()
     }
 
     /// Legal (min_raise_to, max_raise_to) for the player to act, or None if
