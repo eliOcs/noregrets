@@ -13,7 +13,6 @@ use crate::cards::fresh_deck;
 use crate::engine::{Hand, HandConfig, PlayerAction, Players, Street, MAX_PLAYERS};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};

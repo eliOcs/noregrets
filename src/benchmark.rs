@@ -11,7 +11,7 @@
 //! Pluribus's play.
 
 use crate::bot::Policy;
-use crate::cards::{parse_card, Card, Hole};
+use crate::cards::{parse_card, Card, Deck, Hole};
 use crate::engine::{Blinds, HandConfig, PlayerAction, Players, Stack, Street};
 use crate::table::Table;
 use rand::rngs::SmallRng;
@@ -171,41 +171,13 @@ pub fn replay_hand(
         }
     }
 
-    let mut deck = [Card::FILL; 52];
-    let mut used = [false; 52];
-    let mut place = |pos: usize, c: Card, used: &mut [bool; 52]| -> bool {
-        if used[c.index()] {
-            return false;
-        }
-        used[c.index()] = true;
-        deck[pos] = c;
-        true
-    };
-    for (p, h) in holes.iter().enumerate() {
-        if let Some(h) = h {
-            if !place(2 * p, h[0], &mut used) || !place(2 * p + 1, h[1], &mut used) {
-                return Err(ReplayError::Unsupported); // duplicate card in log
-            }
-        }
+    // A board past five cards or a card logged twice is not a hand the
+    // engine can replay.
+    if board.len() > 5 {
+        return Err(ReplayError::Unsupported);
     }
-    for (i, &c) in board.iter().enumerate() {
-        if !place(2 * n + i, c, &mut used) {
-            return Err(ReplayError::Unsupported);
-        }
-    }
-    // Fill unknown holes and the rest of the deck with unused cards.
-    let mut filler = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
-    for (p, h) in holes.iter().enumerate() {
-        if h.is_none() {
-            deck[2 * p] = filler.next().unwrap();
-            deck[2 * p + 1] = filler.next().unwrap();
-        }
-    }
-    for i in board.len()..5 {
-        deck[2 * n + i] = filler.next().unwrap();
-    }
-    let tail: Vec<Card> = filler.collect();
-    deck[2 * n + 5..].copy_from_slice(&tail);
+    let dealt = holes.iter().enumerate().filter_map(|(p, h)| h.map(|h| [(2 * p, h[0]), (2 * p + 1, h[1])]));
+    let deck = Deck::place(dealt.flatten().chain((2 * n..).zip(board))).map_err(|_| ReplayError::Unsupported)?;
 
     let cfg = HandConfig {
         num_players: players,

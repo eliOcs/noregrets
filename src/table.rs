@@ -8,10 +8,9 @@
 
 use crate::abstraction::{AbsAction, Abstraction, Token};
 use crate::bot::Policy;
-use crate::cards::{fresh_deck, Card, Rank};
+use crate::cards::{fresh_deck, Card, Deck, Rank};
 use crate::engine::{Hand, HandConfig, PlayerAction};
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
@@ -38,7 +37,7 @@ pub struct RoundRoot {
 }
 
 impl Table {
-    pub fn new(cfg: &HandConfig, button: usize, deck: [Card; 52]) -> Table {
+    pub fn new(cfg: &HandConfig, button: usize, deck: Deck) -> Table {
         let real = Hand::new(cfg, button, deck);
         Table {
             shadow: real.clone(),
@@ -262,7 +261,7 @@ fn play_one(
     policy: &Policy,
     cfg: &HandConfig,
     baseline: Baseline,
-    deck: [Card; 52],
+    deck: Deck,
     button: usize,
     hero: usize,
     rng: &mut SmallRng,
@@ -469,7 +468,7 @@ pub fn run_eval_paired_policies(
         ..crate::cfr::TrainConfig::default()
     };
 
-    let play_variant = |deck: [Card; 52],
+    let play_variant = |deck: Deck,
                         button: usize,
                         hero: usize,
                         i: u64,

@@ -774,7 +774,7 @@ pub fn resolve_subgame(
 mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
-    use crate::cards::{fresh_deck, parse_cards, Card, Hole};
+    use crate::cards::{fresh_deck, parse_cards, Deck, Hole};
     use crate::cfr::make_key;
     use crate::engine::{HandConfig, PlayerAction, Players, Stack};
     use rand::SeedableRng;
@@ -876,19 +876,7 @@ mod tests {
     fn search_calls_the_nuts_on_the_river() {
         // Heads-up. p0 (button/SB) has a royal flush by the river.
         let front = parse_cards("As Ks 2c 7d Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
 
         let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&hand_cfg, 0, deck);
@@ -970,19 +958,7 @@ mod tests {
     fn round_rooted_search_calls_the_nuts_three_way() {
         use crate::table::Table;
         let front = parse_cards("As Ks 2c 7d 8h 9c Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let hand_cfg = HandConfig::new(Players::THREE, Stack::new(2_000).unwrap());
         // The blueprint's 6 river buckets are too coarse here: against
         // the resolved (strong) shoving range the top bucket mixes the
@@ -1060,19 +1036,7 @@ mod tests {
     fn safe_resolve_calls_the_nuts_on_the_river() {
         use crate::search::RangeTracker;
         let front = parse_cards("As Ks 2c 7d Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&hand_cfg, 0, deck);
         let abs = Arc::new(abs_small());
@@ -1140,19 +1104,7 @@ mod tests {
         use crate::search::RangeTracker;
         use crate::table::Table;
         let front = parse_cards("As Ks 2c 7d Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let abs = Arc::new(abs_small());
         let policy = Policy::new(
@@ -1218,19 +1170,7 @@ mod tests {
         use crate::table::Table;
         // Bot is p1 (first to act postflop) with a medium hand; we are p0.
         let front = parse_cards("2c 7d Ah Kd Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let abs = Arc::new(abs_small());
         let policy = Policy::new(
@@ -1345,19 +1285,7 @@ mod tests {
         use crate::search::RangeTracker;
         use crate::table::Table;
         let front = parse_cards("2c 7d Ah Kd Qs Js Ts").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let abs = Arc::new(abs_small());
         let policy = Policy::new(
@@ -1419,19 +1347,7 @@ mod tests {
         use crate::search::RangeTracker;
         use crate::table::Table;
         let front = parse_cards("Ah 3c Kd 9c Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         // The 800-into-200 off-tree bet maps to the callable 400 size only on
         // the wide menu; the test is about pricing, so pin that menu.

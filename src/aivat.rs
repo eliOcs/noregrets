@@ -24,12 +24,11 @@
 //! unbiased and only slightly widens the CI.
 
 use crate::bot::Policy;
-use crate::cards::{fresh_deck, Card};
+use crate::cards::{fresh_deck, Card, Deck};
 use crate::engine::{Hand, HandConfig, PlayerAction};
 use crate::eval::eval_hole_board;
 use crate::table::{baseline_action, Baseline, EvalResult, Table};
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
@@ -39,14 +38,13 @@ use rayon::prelude::*;
 fn alt_hand(
     cfg: &HandConfig,
     button: usize,
-    deck: [Card; 52],
+    deck: Deck,
     put: &[(usize, Card)],
     actions: &[PlayerAction],
 ) -> Hand {
     let mut d = deck;
     for &(pos, card) in put {
-        let cur = d.iter().position(|&c| c == card).unwrap();
-        d.swap(pos, cur);
+        d.put(pos, card);
     }
     let mut h = Hand::new(cfg, button, d);
     for &a in actions {
@@ -143,7 +141,7 @@ fn play_one_aivat(
     policy: &Policy,
     cfg: &HandConfig,
     baseline: Baseline,
-    deck: [Card; 52],
+    deck: Deck,
     button: usize,
     hero: usize,
     ac: &AivatCfg,
@@ -342,19 +340,7 @@ mod tests {
     #[test]
     fn v_est_is_exact_on_the_river() {
         let front = parse_cards("As Ks 2c 7d Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&cfg, 0, deck);
         for _ in 0..6 {

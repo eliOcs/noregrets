@@ -14,7 +14,7 @@
 //! (`Policy::search_dist`) from ranges rebuilt by replaying the request.
 
 use crate::bot::{Policy, SearchParams};
-use crate::cards::{card_names, hole_cards, Card, Hole};
+use crate::cards::{card_names, hole_cards, Card, Deck, Hole};
 use crate::cfr::TrainConfig;
 use crate::engine::{HandConfig, PlayerAction, Players, Stack, Street};
 use crate::mirror::{Bot, Mirror, Source};
@@ -117,26 +117,11 @@ impl Spot {
     /// the board; every other position gets a card no one in the request
     /// has seen. Opponents' holes never affect the acting seat's blueprint
     /// lookup.
-    fn deck(&self) -> [Card; 52] {
+    fn deck(&self) -> Deck {
         let n = self.stacks.len();
-        let mut used = [false; 52];
-        for &c in self.hole.iter().chain(&self.board) {
-            used[c.index()] = true;
-        }
-        let mut unseen = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
-        let mut deck = [Card::FILL; 52];
-        for (i, slot) in deck.iter_mut().enumerate() {
-            *slot = if i == 2 * self.seat {
-                self.hole[0]
-            } else if i == 2 * self.seat + 1 {
-                self.hole[1]
-            } else if (2 * n..2 * n + self.board.len()).contains(&i) {
-                self.board[i - 2 * n]
-            } else {
-                unseen.next().expect("52 cards cover every position")
-            };
-        }
-        deck
+        let hole = (2 * self.seat..).zip(self.hole);
+        let board = (2 * n..).zip(self.board.iter().copied());
+        Deck::place(hole.chain(board)).expect("`Spot::new` refuses a card given twice")
     }
 }
 

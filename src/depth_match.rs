@@ -5,13 +5,12 @@
 //! seed: once with A as the hero, once with B. The per-deal difference is
 //! A's cost of playing off-depth, with card luck cancelled.
 
-use crate::cards::{fresh_deck, Card};
+use crate::cards::{fresh_deck, Deck};
 use crate::cfr::sample_index;
 use crate::engine::{HandConfig, PlayerAction, Stack};
 use crate::mirror::{Bot, Mirror, Source};
 use crate::table::mean_ci;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
@@ -81,7 +80,7 @@ fn play(
     field: &Side,
     hero: usize,
     button: usize,
-    deck: [Card; 52],
+    deck: Deck,
     stacks: &[Stack],
     seed: u64,
 ) -> (i64, Counts) {

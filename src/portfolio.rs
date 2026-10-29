@@ -10,7 +10,6 @@ use crate::engine::HandConfig;
 use crate::table::{baseline_action, Baseline, EvalResult, Table};
 use crate::cards::fresh_deck;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 
 pub struct Portfolio {

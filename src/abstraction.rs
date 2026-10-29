@@ -5,11 +5,10 @@
 //! postflop Monte Carlo equity vs one random hand, quantized into buckets,
 //! memoized in a lock-free cache keyed exactly (packed cards, no hash collisions).
 
-use crate::cards::{fresh_deck, Card, Hole, Rank, Suit};
+use crate::cards::{fresh_deck, Card, Deck, Hole, Rank, Suit};
 use crate::engine::{Hand, PlayerAction, Players, Stack, Street};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -243,7 +242,7 @@ pub fn strategic_fingerprint(
     board: &[Card],
     rng: &mut SmallRng,
 ) -> Vec<f32> {
-    let (h0, hist) = standard_state(*hole, board);
+    let (h0, hist) = standard_state(hole, board);
     let acts = sc.abs.abstract_actions(&h0);
     let bucket = sc.abs.bucket(hole, board, rng);
     let mut feat: Vec<f32> = match sc.bp.get(bucket, &hist) {
@@ -304,29 +303,13 @@ pub fn strategic_fingerprint(
 
 /// Standardized heads-up limped-pot state at this street start (hero =
 /// first to act) with the given hole/board, plus its history tokens.
-fn standard_state(hole: [Card; 2], board: &[Card]) -> (crate::engine::Hand, Vec<Token>) {
+fn standard_state(hole: Hole, board: &[Card]) -> (crate::engine::Hand, Vec<Token>) {
     debug_assert!(board.len() == 3 || board.len() == 4);
     let cfg = crate::engine::HandConfig::new(Players::TWO, Stack::new(10_000).unwrap());
-    let mut used = [false; 52];
-    used[hole[0].index()] = true;
-    used[hole[1].index()] = true;
-    for &c in board {
-        used[c.index()] = true;
-    }
-    let mut free = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
-    let mut deck = [Card::FILL; 52];
     // p0 = dummy villain (resampled per rollout), p1 = hero (first to act
     // postflop heads-up), board at deck[4..9].
-    deck[0] = free.next().unwrap();
-    deck[1] = free.next().unwrap();
-    deck[2] = hole[0];
-    deck[3] = hole[1];
-    for (i, &c) in board.iter().enumerate() {
-        deck[4 + i] = c;
-    }
-    for (slot, c) in deck[4 + board.len()..].iter_mut().zip(free) {
-        *slot = c;
-    }
+    let deck = Deck::place((2..).zip(hole).chain((4..).zip(board.iter().copied())))
+        .expect("the board does not hold the hero's cards");
     let mut h = crate::engine::Hand::new(&cfg, 0, deck);
     let mut hist = Vec::with_capacity(8);
     let limp_check = |h: &mut crate::engine::Hand, hist: &mut Vec<Token>| {
@@ -1995,7 +1978,7 @@ mod tests {
     /// least one abstract action whose concrete form is legal.
     #[test]
     fn fuzz_abstract_playouts_always_have_actions() {
-        use rand::seq::{IndexedRandom, SliceRandom};
+        use rand::seq::IndexedRandom;
         use rand::Rng;
         let a = abs();
         let mut rng = SmallRng::seed_from_u64(11);

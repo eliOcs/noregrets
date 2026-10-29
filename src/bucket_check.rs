@@ -5,7 +5,6 @@
 use crate::abstraction::{canonical_cards_key, Abstraction, BucketTable};
 use crate::cards::{fresh_deck, Hole};
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rayon::prelude::*;
 use std::collections::HashMap;

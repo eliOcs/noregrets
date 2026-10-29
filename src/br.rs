@@ -25,7 +25,6 @@ use crate::lbr::{BotRange, Lbr};
 use crate::river::showdown_sweep;
 use crate::search::{all_combos, NUM_COMBOS};
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
@@ -527,7 +526,7 @@ mod tests {
     use super::*;
     use crate::engine::{Players, Stack};
     use crate::abstraction::{AbsConfig, Abstraction};
-    use crate::cards::parse_cards;
+    use crate::cards::{parse_cards, Deck};
     use crate::cfr::Blueprint;
     use crate::table::Table;
     use std::sync::Arc;
@@ -556,22 +555,9 @@ mod tests {
         )
     }
 
-    fn rigged_deck(front: &str) -> [Card; 52] {
+    fn rigged_deck(front: &str) -> Deck {
         let front = parse_cards(front).unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
-        deck
+        Deck::with_front(&front).unwrap()
     }
 
     /// HU table checked down to the river, p1 shoves, p0 to act.

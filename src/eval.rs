@@ -213,7 +213,6 @@ pub fn category(value: HandValue) -> Category {
 mod tests {
     use super::*;
     use crate::cards::parse_cards;
-    use rand::seq::SliceRandom;
     use rand::SeedableRng;
 
     #[test]

@@ -17,7 +17,7 @@
 
 use crate::abstraction::AbsAction;
 use crate::bot::{Policy, SearchParams, SearchSession};
-use crate::cards::{card_names, hole_cards, Card, Hole};
+use crate::cards::{card_names, hole_cards, Card, Deck, Hole};
 use crate::cfr::TrainConfig;
 use crate::engine::{HandConfig, PlayerAction, Players, Stack};
 use crate::search::RangeTracker;
@@ -330,23 +330,7 @@ impl HandState {
         // Opponent cards are unknown: give seat 1 arbitrary non-colliding
         // cards (never read — ranges come from the tracker, showdowns are
         // scored by the API's `winnings`).
-        let mut deck = crate::cards::fresh_deck();
-        let mut used = [false; 52];
-        for &c in &holes {
-            used[c.index()] = true;
-        }
-        deck[0] = holes[0];
-        deck[1] = holes[1];
-        let mut idx = 2;
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-                if idx == 52 {
-                    break;
-                }
-            }
-        }
+        let deck = Deck::with_front(&holes[..]).expect("a hole is two different cards");
         let table = Table::new(&cfg, client_pos.button(), deck);
         let mut tracker = RangeTracker::new(2).with_widening();
         // The bot can't hold our cards.

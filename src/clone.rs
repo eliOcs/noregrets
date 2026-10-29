@@ -12,7 +12,7 @@
 //! buckets (and serialized centroids) line up at train and play time.
 
 use crate::abstraction::Abstraction;
-use crate::cards::{hole_cards, Card, Hole};
+use crate::cards::{hole_cards, Card, Deck, Hole};
 use crate::cfr::{make_key, Blueprint, StrategyMap};
 use crate::engine::{HandConfig, PlayerAction, Players};
 use crate::slumbot::{board, parse_incr, ClientPos, SlumAct, STACK};
@@ -61,33 +61,10 @@ fn replay_hand(hand: &LoggedHand, abs: &Abstraction) -> Result<Vec<Decision>, St
     let (acts, _) = parse_incr(action, 0)?;
 
     let cfg = HandConfig::new(Players::TWO, STACK);
-    // Seat 0 = us, seat 1 = Slumbot (mirrors the live adapter).
-    let mut deck = crate::cards::fresh_deck();
-    let mut used = [false; 52];
-    for &c in our.iter().chain(bot).chain(board) {
-        if std::mem::replace(&mut used[c.index()], true) {
-            return Err(format!("card {c} appears twice"));
-        }
-    }
-    deck[0] = our[0];
-    deck[1] = our[1];
-    deck[2] = bot[0];
-    deck[3] = bot[1];
-    let mut idx = 4;
-    for c in Card::ALL {
-        if !used[c.index()] {
-            deck[idx] = c;
-            idx += 1;
-            if idx == 52 {
-                break;
-            }
-        }
-    }
+    // Seat 0 = us, seat 1 = Slumbot (mirrors the live adapter); the
+    // logged board sits where the engine deals it from.
+    let deck = Deck::place(our.iter().chain(bot.iter()).chain(board).copied().enumerate())?;
     let mut table = Table::new(&cfg, client_pos.button(), deck);
-    for (i, &c) in board.iter().enumerate() {
-        table.real.force_board_card(i, c);
-        table.shadow.force_board_card(i, c);
-    }
 
     let mut rng = SmallRng::seed_from_u64(0); // bucket draws are key-seeded
     let mut out = Vec::new();
@@ -271,9 +248,9 @@ mod tests {
         let v = json!({
             "action": "cc/kk/kk/kk",
             "client_pos": 1,
-            "hole_cards": ["6c", "4d"],
-            "bot_hole_cards": ["Ts", "2c"],
-            "board": ["Ah", "Kd", "Qs", "Js", "3h"],
+            "hole_cards": ["2c", "2d"],
+            "bot_hole_cards": ["7c", "4d"],
+            "board": ["Ah", "Kd", "Qs", "Js", "9h"],
             "winnings": -100,
         });
         let ds = replay_hand(&serde_json::from_value(v).unwrap(), &abs).unwrap();
@@ -289,6 +266,15 @@ mod tests {
             })
             .collect();
         assert_eq!(seps, vec![0, 1, 2, 3]);
+
+        // The river decision is bucketed on the logged board, where
+        // Slumbot's 7-high is the bottom bucket, not on cards the engine
+        // dealt itself (here 2h 2s 3c 3d 3h, a board that chops).
+        let bot = Hole::new("7c".parse().unwrap(), "4d".parse().unwrap()).unwrap();
+        let board: Vec<Card> = ["Ah", "Kd", "Qs", "Js", "9h"].map(|c| c.parse().unwrap()).into();
+        let mut rng = SmallRng::seed_from_u64(0);
+        let want = make_key(abs.bucket(bot, &board, &mut rng), &[]);
+        assert_eq!(ds[3].key[..2], want[..2]);
     }
 
     /// build() over a small file: counts land in the blueprint and repeated

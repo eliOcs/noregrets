@@ -16,7 +16,7 @@
 //!   shadow ignores their actions and they check/call from then on.
 
 use crate::abstraction::{AbsAction, Abstraction, Token};
-use crate::cards::Card;
+use crate::cards::Deck;
 use crate::cfr::Blueprint;
 use crate::engine::{Hand, HandConfig, PlayerAction, Stack};
 use rand::rngs::SmallRng;
@@ -180,7 +180,7 @@ pub struct Mirror {
 
 impl Mirror {
     /// `cfg.stack` is the training depth the shadow plays at.
-    pub fn new(cfg: &HandConfig, button: usize, deck: [Card; 52], stacks: &[Stack]) -> Mirror {
+    pub fn new(cfg: &HandConfig, button: usize, deck: Deck, stacks: &[Stack]) -> Mirror {
         Mirror {
             real: Hand::new_with_stacks(cfg, button, deck, stacks),
             shadow: Hand::new(cfg, button, deck),

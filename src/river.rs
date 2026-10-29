@@ -718,7 +718,7 @@ pub(crate) fn showdown_sweep(
 mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
-    use crate::cards::{fresh_deck, parse_cards};
+    use crate::cards::{parse_cards, Deck};
     use crate::engine::{HandConfig, PlayerAction, Players, Stack};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
@@ -737,19 +737,7 @@ mod tests {
     /// river (non-button acts first postflop).
     fn river_p1_to_act() -> (Hand, Abstraction) {
         let front = parse_cards("As Ks 2c 7d Qs Js Ts 3h 4d").unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
+        let deck = Deck::with_front(&front).unwrap();
         let cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
         let mut h = Hand::new(&cfg, 0, deck);
         h.apply(PlayerAction::CheckCall); // p0 limps

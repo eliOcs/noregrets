@@ -24,7 +24,6 @@ use crate::eval::{eval_hole_board, HandValue};
 use crate::search::{all_combos, NUM_COMBOS};
 use crate::table::Table;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::num::NonZeroU32;
@@ -655,7 +654,7 @@ mod tests {
     use super::*;
     use crate::engine::{Players, Stack};
     use crate::abstraction::{preflop_bucket, AbsConfig, Abstraction};
-    use crate::cards::parse_cards;
+    use crate::cards::{parse_cards, Deck};
     use crate::cfr::{make_key, Blueprint};
     use std::sync::Arc;
 
@@ -684,22 +683,9 @@ mod tests {
     }
 
     /// Rig a deck: `front` cards first, the rest in order.
-    fn rigged_deck(front: &str) -> [Card; 52] {
+    fn rigged_deck(front: &str) -> Deck {
         let front = parse_cards(front).unwrap();
-        let mut deck = fresh_deck();
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
-        deck
+        Deck::with_front(&front).unwrap()
     }
 
     /// HU table walked to the river with p1 shoving: p0 (LBR) to act.

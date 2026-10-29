@@ -9,7 +9,6 @@ use crate::engine::{HandConfig, PlayerAction, Street};
 use crate::search::RangeTracker;
 use crate::table::Table;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use std::io::Write;
 

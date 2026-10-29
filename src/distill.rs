@@ -20,7 +20,6 @@ use crate::search::RangeTracker;
 use crate::table::Table;
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 

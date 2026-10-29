@@ -6,7 +6,7 @@
 //! - Side pots: a short stack can only win chips it covered.
 //! - Min-raise rules, big-blind option, heads-up blind order.
 
-use crate::cards::{Card, Hole};
+use crate::cards::{Card, Deck, Hole};
 use crate::eval::{eval_hole_board, HandValue};
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -240,7 +240,7 @@ pub struct Hand {
 impl Hand {
     /// Deal a new hand. Holes: player p gets deck[2p], deck[2p+1].
     /// Board comes from deck[2n..2n+5] as streets are dealt.
-    pub fn new(cfg: &HandConfig, button: usize, deck: [Card; 52]) -> Hand {
+    pub fn new(cfg: &HandConfig, button: usize, deck: Deck) -> Hand {
         let stacks = vec![cfg.stack; cfg.num_players.get()];
         Hand::new_with_stacks(cfg, button, deck, &stacks)
     }
@@ -248,7 +248,7 @@ impl Hand {
     pub fn new_with_stacks(
         cfg: &HandConfig,
         button: usize,
-        deck: [Card; 52],
+        deck: Deck,
         stacks: &[Stack],
     ) -> Hand {
         let n = cfg.num_players.get();
@@ -258,7 +258,7 @@ impl Hand {
 
         let mut holes = [Hole::FILL; MAX_PLAYERS];
         for (p, hole) in holes.iter_mut().enumerate().take(n) {
-            *hole = Hole::new(deck[2 * p], deck[2 * p + 1]).expect("a deck holds each card once");
+            *hole = deck.hole(p);
         }
 
         let mut h = Hand {
@@ -268,7 +268,7 @@ impl Hand {
             holes,
             board: [Card::FILL; 5],
             board_len: 0,
-            deck,
+            deck: *deck,
             stacks: [0; MAX_PLAYERS],
             street_commit: [0; MAX_PLAYERS],
             hand_commit: [0; MAX_PLAYERS],
@@ -694,27 +694,13 @@ impl Hand {
 mod tests {
     use super::*;
     use crate::cards::{fresh_deck, parse_cards};
-    use rand::seq::SliceRandom;
     use rand::{Rng, SeedableRng};
     use PlayerAction::{CheckCall, Fold, RaiseTo};
 
     /// Deck whose first cards are exactly `front` (parsed), rest arbitrary.
-    fn deck_with_front(front: &str) -> [Card; 52] {
+    fn deck_with_front(front: &str) -> Deck {
         let front = parse_cards(front).unwrap();
-        let mut deck = [Card::FILL; 52];
-        let mut used = [false; 52];
-        for (i, &c) in front.iter().enumerate() {
-            deck[i] = c;
-            used[c.index()] = true;
-        }
-        let mut idx = front.len();
-        for c in Card::ALL {
-            if !used[c.index()] {
-                deck[idx] = c;
-                idx += 1;
-            }
-        }
-        deck
+        Deck::with_front(&front).unwrap()
     }
 
     fn stacks(chips: &[u32]) -> Vec<Stack> {

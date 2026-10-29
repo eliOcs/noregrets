@@ -16,12 +16,11 @@
 //! raise to BET_SIZES[N] of the pot, `a` all-in.
 
 use crate::abstraction::{AbsAction, Abstraction, BetSize, Token};
-use crate::cards::{fresh_deck, Card, Hole, Rank, Suit};
+use crate::cards::{fresh_deck, Card, Deck, Hole, Rank, Suit};
 use crate::cfr::sample_index;
 use crate::engine::{Hand, HandConfig, Street};
 use crate::mirror::Bot;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
@@ -69,7 +68,7 @@ pub fn action_name(h: &Hand, abs: &Abstraction, a: AbsAction) -> String {
 
 /// Replay `line` (whitespace-separated tokens) from a fresh hand. The
 /// deck only fixes the cards; the line's validity does not depend on it.
-pub fn node(cfg: &HandConfig, abs: &Abstraction, line: &str, deck: [Card; 52]) -> Result<Node, String> {
+pub fn node(cfg: &HandConfig, abs: &Abstraction, line: &str, deck: Deck) -> Result<Node, String> {
     let mut h = Hand::new(cfg, 0, deck);
     let mut hist = Vec::new();
     let mut steps = Vec::new();
@@ -185,7 +184,7 @@ pub fn probe(bot: &Bot, cfg: &HandConfig, line: &str) -> Result<Probe, String> {
         let cs = class_combos(&name)?;
         // Preflop buckets depend on the class only.
         let mut deck = fresh_deck();
-        place(&mut deck, hero, *cs[0]);
+        deck.deal_to(hero, cs[0]);
         let n = node(cfg, &bot.abs, line, deck)?;
         let (_, p, _) = dist(bot, &n.hand, &n.hist, &mut rng);
         if let Some(i) = all_in_at {
@@ -209,14 +208,6 @@ pub fn probe(bot: &Bot, cfg: &HandConfig, line: &str) -> Result<Probe, String> {
         premium_all_in,
         residue: if ai_sum > 0.0 { ai_residue / ai_sum } else { 0.0 },
     })
-}
-
-/// Put `hole` into `seat`'s deal slots, swapping out whatever was there.
-fn place(deck: &mut [Card; 52], seat: usize, hole: [Card; 2]) {
-    for (k, &c) in hole.iter().enumerate() {
-        let at = deck.iter().position(|&x| x == c).unwrap();
-        deck.swap(2 * seat + k, at);
-    }
 }
 
 /// One sampled deal of `action_ev`: its importance weight (the reach of the
@@ -281,7 +272,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
             let mut rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let mut deck = fresh_deck();
             deck.shuffle(&mut rng);
-            place(&mut deck, hero, *combos[rng.random_range(0..combos.len())]);
+            deck.deal_to(hero, combos[rng.random_range(0..combos.len())]);
             let n = node(cfg, &bot.abs, line, deck).expect("line checked above");
             // Reach of the line for everyone but the hero, whose own reach
             // is the same for every combo of the class.
@@ -321,7 +312,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
         .collect();
     let mut rng = SmallRng::seed_from_u64(0);
     let mut deck = fresh_deck();
-    place(&mut deck, hero, *combos[0]);
+    deck.deal_to(hero, combos[0]);
     let nh = node(cfg, &bot.abs, line, deck)?;
     let (_, mix, _) = dist(bot, &nh.hand, &nh.hist, &mut rng);
     let mut hero_reach = 1.0;

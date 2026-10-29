@@ -20,7 +20,6 @@ use crate::engine::{Hand, HandConfig, PlayerAction, Players, Stack};
 use crate::river::RiverSolver;
 use crate::search::NUM_COMBOS;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 

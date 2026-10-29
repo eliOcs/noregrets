@@ -296,9 +296,86 @@ pub fn parse_cards(s: &str) -> Option<Vec<Card>> {
     s.split_whitespace().map(parse_card).collect()
 }
 
+/// The 52 cards, each exactly once, in the order a hand deals them: seat
+/// `p` holds positions `2p` and `2p + 1`, and the board follows the last
+/// seat. Shuffling and `place` keep every card once, so holes dealt from a
+/// deck never repeat a card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deck([Card; 52]);
+
+impl Deck {
+    /// Shuffle in place, drawing from `rng` exactly as shuffling the
+    /// card array does, so a seed deals the same hands.
+    pub fn shuffle<R: rand::Rng + ?Sized>(&mut self, rng: &mut R) {
+        use rand::seq::SliceRandom;
+        self.0.shuffle(rng);
+    }
+
+    /// A deck with each `(position, card)` in place and every other
+    /// position filled, in order, with the unused cards in order. Refuses
+    /// a card or a position given twice, and positions past the deck.
+    pub fn place(fixed: impl IntoIterator<Item = (usize, Card)>) -> Result<Deck, String> {
+        let mut slots = [None; 52];
+        let mut used = [false; 52];
+        for (pos, c) in fixed {
+            if std::mem::replace(&mut used[c.index()], true) {
+                return Err(format!("card {c} appears twice"));
+            }
+            match slots.get_mut(pos) {
+                Some(slot @ None) => *slot = Some(c),
+                Some(Some(_)) => return Err(format!("two cards for position {pos}")),
+                None => return Err(format!("a deck has no position {pos}")),
+            }
+        }
+        let mut unused = Card::ALL.into_iter().filter(|c| !used[c.index()]);
+        Ok(Deck(slots.map(|slot| slot.unwrap_or_else(|| unused.next().expect("52 cards fill 52 positions")))))
+    }
+
+    /// `place` with the given cards at the front.
+    pub fn with_front(front: &[Card]) -> Result<Deck, String> {
+        Deck::place(front.iter().copied().enumerate())
+    }
+
+    /// Move `card` to `pos`, swapping it with the card there, so every
+    /// card stays in the deck once.
+    pub fn put(&mut self, pos: usize, card: Card) {
+        let at = self.0.iter().position(|&x| x == card).expect("a deck holds every card");
+        self.0.swap(pos, at);
+    }
+
+    /// Deal `hole` to `seat`, by `put`ting each of its cards in place.
+    pub fn deal_to(&mut self, seat: usize, hole: Hole) {
+        for (k, c) in hole.into_iter().enumerate() {
+            self.put(2 * seat + k, c);
+        }
+    }
+
+    /// The hole cards dealt to `seat`.
+    pub fn hole(&self, seat: usize) -> Hole {
+        Hole::new(self.0[2 * seat], self.0[2 * seat + 1]).expect("a deck holds each card once")
+    }
+}
+
+impl std::ops::Deref for Deck {
+    type Target = [Card; 52];
+
+    fn deref(&self) -> &[Card; 52] {
+        &self.0
+    }
+}
+
+impl IntoIterator for Deck {
+    type Item = Card;
+    type IntoIter = std::array::IntoIter<Card, 52>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 /// A fresh 52-card deck in order; shuffle with your own RNG.
-pub fn fresh_deck() -> [Card; 52] {
-    Card::ALL
+pub fn fresh_deck() -> Deck {
+    Deck(Card::ALL)
 }
 
 /// Shorthand for building cards from rank and suit indices in tests.
