@@ -346,24 +346,36 @@ impl HandState {
         })
     }
 
-    /// Force newly revealed board cards into the engine.
+    /// Force the server's board cards into the engine, up to the streets
+    /// the engine has reached. A reply can show a street the engine has
+    /// not dealt yet (Slumbot's action closed the one before); the engine
+    /// deals its own card when it gets there, so that card is forced on a
+    /// later call.
     fn sync_board(&mut self, board: &[Card]) {
-        for (i, &c) in board.iter().enumerate().skip(self.board_forced) {
+        let dealt = board.len().min(self.table.real.board().len());
+        if dealt <= self.board_forced {
+            return;
+        }
+        for (i, &c) in board.iter().enumerate().take(dealt).skip(self.board_forced) {
             self.table.real.force_board_card(i, c);
             self.table.shadow.force_board_card(i, c);
         }
-        if board.len() > self.board_forced {
-            let newly = &board[self.board_forced..];
-            self.tracker.exclude(newly);
-            self.board_forced = board.len();
-        }
+        self.tracker.exclude(&board[self.board_forced..dealt]);
+        self.board_forced = dealt;
     }
 
-    /// Apply Slumbot's newly observed increments (everything past the
-    /// cursor that happened before it is our turn again).
-    fn apply_bot_increments(&mut self, action: &str, policy: &Policy) -> Result<(), String> {
+    /// Catch up with a reply: apply Slumbot's newly observed increments
+    /// (everything past the cursor that happened before it is our turn
+    /// again), keeping the board in step as streets change.
+    fn apply_bot_increments(
+        &mut self,
+        board: &[Card],
+        action: &str,
+        policy: &Policy,
+    ) -> Result<(), String> {
         let (incrs, new_cursor) = parse_incr(action, self.cursor)?;
         self.cursor = new_cursor;
+        self.sync_board(board);
         for inc in incrs {
             if inc == SlumAct::StreetSep {
                 continue; // engine advances itself
@@ -397,6 +409,7 @@ impl HandState {
                     "desync: server reports action for seat {p} (us) we did not send"
                 ));
             }
+            self.sync_board(board);
         }
         Ok(())
     }
@@ -493,16 +506,13 @@ pub fn run(
                 }
                 continue 'hands;
             }
-            st.sync_board(&reply.board);
-            if let Err(e) = st.apply_bot_increments(&reply.action, policy) {
+            if let Err(e) = st.apply_bot_increments(&reply.board, &reply.action, policy) {
                 if cfg.verbose {
                     eprintln!("hand {h}: {e}");
                 }
                 desyncs += 1;
                 continue 'hands;
             }
-            // Board can also change on the action that closed a street.
-            st.sync_board(&reply.board);
             if st.table.real.to_act() != Some(st.our_seat) {
                 // Server should have ended the hand or acted; ask again by
                 // desync-abort (no polling endpoint exists).
@@ -880,6 +890,49 @@ mod tests {
         let r = run(&policy, &mut t, &cfg, &mut |_, _| {}).unwrap();
         assert_eq!(r.hands, 1);
         assert_eq!(r.desyncs, 0);
+    }
+
+    /// A reply can carry the action that closes a street and then
+    /// Slumbot's first action on the next one. The board the server shows
+    /// must end up in the engine either way, and Slumbot's later actions
+    /// must be read on it: the engine deals its own card when the street
+    /// closes, which must not win.
+    #[test]
+    fn board_follows_streets_slumbot_closes() {
+        let policy = empty_policy();
+        let cards = |names: &[&str]| -> Vec<Card> { names.iter().map(|c| c.parse().unwrap()).collect() };
+        let deal = json!({
+            "token": "T3",
+            "client_pos": 1,
+            "hole_cards": ["Ac", "9d"],
+            "board": [],
+            "action": "",
+        });
+        let mut st = HandState::build(&deal).unwrap();
+        st.apply_bot_increments(&[], "", &policy).unwrap();
+        let send = |st: &mut HandState, a: PlayerAction| {
+            let incr = to_incr(a, st.table.real.to_call());
+            st.table.apply_concrete(a, &policy.abs);
+            st.cursor += incr.len();
+        };
+
+        // We limp; Slumbot checks (closing preflop) and checks the flop.
+        send(&mut st, PlayerAction::CheckCall);
+        let flop = cards(&["Qs", "Js", "Ts"]);
+        st.apply_bot_increments(&flop, "ck/k", &policy).unwrap();
+        assert_eq!(st.table.real.board(), &flop[..]);
+        assert_eq!(st.table.shadow.board(), &flop[..]);
+        assert_eq!(st.table.real.to_act(), Some(st.our_seat));
+        let qj = Hole::new(flop[0], flop[1]).unwrap();
+        assert_eq!(st.tracker.weight(st.bot_seat, qj), 0.0, "flop cards leave the bot's range");
+
+        // We bet; Slumbot calls (closing the flop) and checks the turn.
+        send(&mut st, PlayerAction::RaiseTo(200));
+        let turn = cards(&["Qs", "Js", "Ts", "3h"]);
+        st.apply_bot_increments(&turn, "ck/kb200c/k", &policy).unwrap();
+        assert_eq!(st.table.real.board(), &turn[..]);
+        assert_eq!(st.table.shadow.board(), &turn[..]);
+        assert_eq!(st.table.real.to_act(), Some(st.our_seat));
     }
 
     /// client_pos 1 (we are the small blind / button): we act first

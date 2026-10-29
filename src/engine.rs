@@ -492,7 +492,7 @@ impl Hand {
     /// public chance outcomes; holes and deck are untouched, so the hand
     /// must not be used for engine showdowns afterwards.
     pub fn force_board_card(&mut self, idx: usize, c: Card) {
-        debug_assert!(idx < self.board_len);
+        assert!(idx < self.board_len, "board card {idx} is not dealt yet");
         self.board[idx] = c;
     }
 
