@@ -114,8 +114,7 @@ impl SubgameBr<'_> {
                 bucket_river.push(buckets);
             }
         } else {
-            debug_assert_eq!(board.len(), 5);
-            let board5 = [board[0], board[1], board[2], board[3], board[4]];
+            let board5: [Card; 5] = board[..].try_into().expect("a river decision has a complete board");
             let (rk, st) = rank_table(&board5);
             rank.push(rk);
             sorted.push(st);

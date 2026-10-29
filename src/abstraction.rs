@@ -624,8 +624,8 @@ impl Abstraction {
         if board.is_empty() {
             return preflop_bucket(*hole);
         }
-        if board.len() == 5 && self.strat.is_none() {
-            return self.river_bucket(hole, board);
+        if let (Ok(river), None) = (<&[Card; 5]>::try_from(board), &self.strat) {
+            return self.river_bucket(hole, river);
         }
         let key = pack_cards_key(*hole, board);
         if let Some(b) = self.cache.get(&key) {
@@ -711,8 +711,7 @@ impl Abstraction {
     /// times, so a thread-local one-slot memo skips both the 24-permutation
     /// canonicalization and the shared-map lookup on repeats, and the
     /// shared map is read-locked (get) before ever write-locking (entry).
-    fn river_bucket(&self, hole: Hole, board: &[Card]) -> u16 {
-        debug_assert_eq!(board.len(), 5);
+    fn river_bucket(&self, hole: Hole, board: &[Card; 5]) -> u16 {
         // Keyed by board AND bucket count: abstractions with different
         // bucket counts coexist in one thread (blueprint lookups vs a
         // finer subgame solver) and must not share a table.
@@ -725,7 +724,7 @@ impl Abstraction {
         thread_local! {
             static LAST: std::cell::RefCell<Option<Memo>> = const { std::cell::RefCell::new(None) };
         }
-        let b5 = [board[0], board[1], board[2], board[3], board[4]];
+        let b5 = *board;
         let nb = self.cfg.postflop_buckets;
         let memo = LAST.with(|l| {
             l.borrow()

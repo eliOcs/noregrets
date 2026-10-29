@@ -181,10 +181,8 @@ pub fn eval7(cards: &[Card; 7]) -> HandValue {
     pack(Category::HighCard, &tops)
 }
 
-/// Convenience: evaluate 2 hole cards + 3..5 board cards (pads via best-of available
-/// is NOT supported; board must have exactly 5 cards for showdown use, or use eval7 directly).
-pub fn eval_hole_board(hole: &[Card; 2], board: &[Card]) -> HandValue {
-    debug_assert_eq!(board.len(), 5);
+/// Evaluate two hole cards on a complete board.
+pub fn eval_hole_board(hole: &[Card; 2], board: &[Card; 5]) -> HandValue {
     let cards = [
         hole[0], hole[1], board[0], board[1], board[2], board[3], board[4],
     ];
