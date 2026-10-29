@@ -354,10 +354,10 @@ mod tests {
     /// fold 4 seats; the real blueprint has no such trouble).
     fn small_policy() -> Policy {
         let abs = Arc::new(Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
-            dist_runouts: 8,
-            runout_rollouts: 20,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(40).unwrap(),
+            dist_runouts: std::num::NonZero::new(8).unwrap(),
+            runout_rollouts: std::num::NonZero::new(20).unwrap(),
             cache_cap: 500_000,
             menu: crate::abstraction::MenuShape::Wide,
         }));

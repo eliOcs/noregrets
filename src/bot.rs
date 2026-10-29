@@ -261,7 +261,7 @@ impl Policy {
     /// Solve multiway subgames over `buckets` postflop card buckets
     /// (equity quantiles; exact per-board on the river) instead of the
     /// blueprint's.
-    pub fn with_search_buckets(mut self, buckets: Option<u16>) -> Self {
+    pub fn with_search_buckets(mut self, buckets: Option<std::num::NonZeroU16>) -> Self {
         self.search_abs = buckets.map(|b| {
             Arc::new(Abstraction::new(AbsConfig {
                 postflop_buckets: b,
@@ -788,8 +788,8 @@ mod tests {
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 50,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(50).unwrap(),
             cache_cap: 100_000,
             ..AbsConfig::default()
         })
@@ -930,8 +930,8 @@ mod tests {
         };
         let solver = resolve_subgame(
             Arc::new(Abstraction::new(AbsConfig {
-                postflop_buckets: 6,
-                equity_rollouts: 50,
+                postflop_buckets: std::num::NonZero::new(6).unwrap(),
+                equity_rollouts: std::num::NonZero::new(50).unwrap(),
                 cache_cap: 100_000,
                 ..AbsConfig::default()
             })),
@@ -997,8 +997,8 @@ mod tests {
         // the solver gets its own finer abstraction (Pluribus: lossless
         // on the current street).
         let abs = Arc::new(Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 50,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(50).unwrap(),
             cache_cap: 100_000,
             ..AbsConfig::default()
         }));
@@ -1012,7 +1012,7 @@ mod tests {
             },
             abs.clone(),
         )
-        .with_search_buckets(Some(30));
+        .with_search_buckets(std::num::NonZero::new(30));
         let mut table = Table::new(&hand_cfg, 0, deck);
         let mut tracker = RangeTracker::new(3);
         // p0 calls, p1 calls, p2 checks; checked around to the river.

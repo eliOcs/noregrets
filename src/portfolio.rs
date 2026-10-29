@@ -125,14 +125,14 @@ mod tests {
 
     fn train_arm(rnr: Option<RnrCfg>) -> Policy {
         let abs_cfg = AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 50,
-            dist_runouts: 12,
-            runout_rollouts: 25,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(50).unwrap(),
+            dist_runouts: std::num::NonZero::new(12).unwrap(),
+            runout_rollouts: std::num::NonZero::new(25).unwrap(),
             cache_cap: 1_000_000,
             menu: crate::abstraction::MenuShape::Wide,
         };
-        let cents = Centroids::train(&abs_cfg, 400, 99);
+        let cents = Centroids::train(&abs_cfg, std::num::NonZero::new(400).unwrap(), 99);
         let abs = Arc::new(Abstraction::with_centroids(abs_cfg, Some(cents)));
         let cfg = TrainConfig {
             hand: HandConfig::new(Players::TWO, Stack::new(1_000).unwrap()),

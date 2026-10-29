@@ -13,6 +13,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::num::{NonZero, NonZeroU16, NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 
 /// Pot-fraction bet sizes, in percent of (pot + amount to call).
@@ -90,16 +91,16 @@ pub const COMBINED_DIM: usize = QUANTILES + OCHS_CLUSTERS;
 pub struct AbsConfig {
     /// Number of postflop card buckets per street (k-means clusters on
     /// flop/turn, equity quantiles on the river).
-    pub postflop_buckets: u16,
+    pub postflop_buckets: NonZeroU16,
     /// Bet-size menu shape. Stored with the blueprint, so play and probes
     /// always use the menu the blueprint was trained with.
     pub menu: MenuShape,
     /// Monte Carlo rollouts per river equity estimate.
-    pub equity_rollouts: u32,
+    pub equity_rollouts: NonZeroU32,
     /// Sampled future-board runouts per flop/turn distribution estimate.
-    pub dist_runouts: u32,
+    pub dist_runouts: NonZeroU32,
     /// Equity rollouts per sampled runout.
-    pub runout_rollouts: u32,
+    pub runout_rollouts: NonZeroU32,
     /// Stop inserting into the equity cache beyond this many entries.
     pub cache_cap: usize,
 }
@@ -107,11 +108,11 @@ pub struct AbsConfig {
 impl Default for AbsConfig {
     fn default() -> Self {
         AbsConfig {
-            postflop_buckets: 12,
+            postflop_buckets: NonZero::new(12).unwrap(),
             menu: MenuShape::Pluribus,
-            equity_rollouts: 200,
-            dist_runouts: 24,
-            runout_rollouts: 50,
+            equity_rollouts: NonZero::new(200).unwrap(),
+            dist_runouts: NonZero::new(24).unwrap(),
+            runout_rollouts: NonZero::new(50).unwrap(),
             cache_cap: 30_000_000,
         }
     }
@@ -154,10 +155,10 @@ impl Centroids {
     /// Sample random (hole, board) situations per street and cluster their
     /// equity-distribution quantile vectors with EMD k-medians. Deterministic
     /// for a given seed.
-    pub fn train(cfg: &AbsConfig, samples: usize, seed: u64) -> Centroids {
+    pub fn train(cfg: &AbsConfig, samples: NonZeroUsize, seed: u64) -> Centroids {
         Centroids {
-            flop: train_street_centroids(cfg, 3, samples, seed),
-            turn: train_street_centroids(cfg, 4, samples, seed ^ 0x5EED_5EED),
+            flop: train_street_centroids(cfg, 3, samples.get(), seed),
+            turn: train_street_centroids(cfg, 4, samples.get(), seed ^ 0x5EED_5EED),
         }
     }
 
@@ -165,19 +166,19 @@ impl Centroids {
     /// PREVIOUS blueprint plays and realizes them (strategic fingerprints)
     /// instead of by their equity distributions. `cfg` is the NEW
     /// abstraction's configuration (bucket count).
-    pub fn train_strategic(cfg: &AbsConfig, samples: usize, seed: u64, sc: &StratCtx) -> Centroids {
+    pub fn train_strategic(cfg: &AbsConfig, samples: NonZeroUsize, seed: u64, sc: &StratCtx) -> Centroids {
         Centroids {
-            flop: train_street_strategic(cfg, 3, samples, seed, sc),
-            turn: train_street_strategic(cfg, 4, samples, seed ^ 0x5EED_5EED, sc),
+            flop: train_street_strategic(cfg, 3, samples.get(), seed, sc),
+            turn: train_street_strategic(cfg, 4, samples.get(), seed ^ 0x5EED_5EED, sc),
         }
     }
 
     /// Sample random situations per street and cluster their combined
     /// potential-aware feature (quantiles + OCHS) with L1 k-medians.
-    pub fn train_combined(cfg: &AbsConfig, samples: usize, seed: u64) -> Centroids {
+    pub fn train_combined(cfg: &AbsConfig, samples: NonZeroUsize, seed: u64) -> Centroids {
         Centroids {
-            flop: train_street_combined(cfg, 3, samples, seed),
-            turn: train_street_combined(cfg, 4, samples, seed ^ 0x5EED_5EED),
+            flop: train_street_combined(cfg, 3, samples.get(), seed),
+            turn: train_street_combined(cfg, 4, samples.get(), seed ^ 0x5EED_5EED),
         }
     }
 
@@ -333,7 +334,7 @@ fn train_street_strategic(
             strategic_fingerprint(sc, hole, &board, &mut rng)
         })
         .collect();
-    kmedians(&points, cfg.postflop_buckets as usize, 25, seed)
+    kmedians(&points, cfg.postflop_buckets.get() as usize, 25, seed)
 }
 
 fn train_street_centroids(
@@ -355,7 +356,7 @@ fn train_street_centroids(
                 .to_vec()
         })
         .collect();
-    kmedians(&points, cfg.postflop_buckets as usize, 25, seed)
+    kmedians(&points, cfg.postflop_buckets.get() as usize, 25, seed)
 }
 
 /// A read-only flop/turn bucket table keyed by suit-canonical (hole,
@@ -613,7 +614,7 @@ impl Abstraction {
             }
             return b;
         }
-        let nb = self.cfg.postflop_buckets;
+        let nb = self.cfg.postflop_buckets.get();
         let street_cents = match board.len() {
             3 => self.centroids.as_ref().map(|c| &c.flop),
             4 => self.centroids.as_ref().map(|c| &c.turn),
@@ -687,7 +688,7 @@ impl Abstraction {
         // finer subgame solver) and must not share a table.
         struct Memo {
             board: [Card; 5],
-            buckets: u16,
+            buckets: NonZeroU16,
             perm: SuitPerm,
             table: std::sync::Arc<Vec<u16>>,
         }
@@ -931,7 +932,8 @@ fn apply_perm(board: &[Card], perm: &SuitPerm) -> Vec<Card> {
 /// sweep: rank all combos, then equity = win + tie/2 fraction of the
 /// card-removal-compatible opponent combos (uniform opponent — the same
 /// estimand as `equity_vs_random`, exactly).
-fn build_river_table(board: &[Card], nb: u16) -> Vec<u16> {
+fn build_river_table(board: &[Card], nb: NonZeroU16) -> Vec<u16> {
+    let nb = nb.get();
     use crate::eval::{eval_hole_board, HandValue};
     use crate::search::NUM_COMBOS;
     let combos = crate::search::all_combos();
@@ -981,7 +983,7 @@ fn build_river_table(board: &[Card], nb: u16) -> Vec<u16> {
 
 /// Monte Carlo equity of hole+board vs one uniform random opponent hand,
 /// with random board runout. Ties count half.
-fn equity_vs_random(hole: [Card; 2], board: &[Card], rollouts: u32, rng: &mut SmallRng) -> f64 {
+fn equity_vs_random(hole: [Card; 2], board: &[Card], rollouts: NonZeroU32, rng: &mut SmallRng) -> f64 {
     use crate::eval::eval_hole_board;
     use rand::Rng;
 
@@ -1006,7 +1008,7 @@ fn equity_vs_random(hole: [Card; 2], board: &[Card], rollouts: u32, rng: &mut Sm
     full_board[..board.len()].copy_from_slice(board);
 
     let mut score = 0.0f64;
-    for _ in 0..rollouts {
+    for _ in 0..rollouts.get() {
         // Partial Fisher-Yates: draw `draw` cards from rem.
         for k in 0..draw {
             let j = rng.random_range(k..rem_len);
@@ -1024,7 +1026,7 @@ fn equity_vs_random(hole: [Card; 2], board: &[Card], rollouts: u32, rng: &mut Sm
             score += 0.5;
         }
     }
-    score / rollouts as f64
+    score / rollouts.get() as f64
 }
 
 /// Quantile vector of the hand's river-equity distribution: sample `runouts`
@@ -1034,8 +1036,8 @@ fn equity_vs_random(hole: [Card; 2], board: &[Card], rollouts: u32, rng: &mut Sm
 pub fn equity_quantiles(
     hole: [Card; 2],
     board: &[Card],
-    runouts: u32,
-    rollouts: u32,
+    runouts: NonZeroU32,
+    rollouts: NonZeroU32,
     rng: &mut SmallRng,
 ) -> [f32; QUANTILES] {
     use rand::Rng;
@@ -1059,8 +1061,8 @@ pub fn equity_quantiles(
     let mut full = [Card::FILL; 5];
     full[..board.len()].copy_from_slice(board);
 
-    let mut eqs: Vec<f32> = Vec::with_capacity(runouts as usize);
-    for _ in 0..runouts {
+    let mut eqs: Vec<f32> = Vec::with_capacity(runouts.get() as usize);
+    for _ in 0..runouts.get() {
         for k in 0..need {
             let j = rng.random_range(k..unseen_len);
             unseen.swap(k, j);
@@ -1101,7 +1103,7 @@ fn preflop_tiers() -> &'static [u8; 169] {
                 [Card::new(c, s0), Card::new(a, s1)] // offsuit hi=c, lo=a
             };
             let mut rng = SmallRng::seed_from_u64(0x0C45_0000 ^ b as u64);
-            *e = equity_vs_random(hole, &[], 800, &mut rng) as f32;
+            *e = equity_vs_random(hole, &[], NonZero::new(800).unwrap(), &mut rng) as f32;
         }
         // Rank buckets by equity, assign to OCHS_CLUSTERS equal-count tiers.
         let mut order: Vec<usize> = (0..169).collect();
@@ -1123,8 +1125,8 @@ fn preflop_tiers() -> &'static [u8; 169] {
 pub fn combined_features(
     hole: [Card; 2],
     board: &[Card],
-    runouts: u32,
-    rollouts: u32,
+    runouts: NonZeroU32,
+    rollouts: NonZeroU32,
     rng: &mut SmallRng,
 ) -> [f32; COMBINED_DIM] {
     use crate::eval::eval_hole_board;
@@ -1155,7 +1157,7 @@ pub fn combined_features(
     // One MC pass; each opponent hand is credited to its preflop tier.
     let mut sum = [0f64; OCHS_CLUSTERS];
     let mut cnt = [0u32; OCHS_CLUSTERS];
-    let samples = runouts * rollouts;
+    let samples = runouts.get() * rollouts.get();
     for _ in 0..samples {
         // Draw an opponent hand + the remaining board from `unseen`.
         for k in 0..(need + 2) {
@@ -1210,7 +1212,7 @@ fn train_street_combined(
             combined_features(hole, &board, cfg.dist_runouts, cfg.runout_rollouts, &mut rng).to_vec()
         })
         .collect();
-    kmedians(&points, cfg.postflop_buckets as usize, 25, seed)
+    kmedians(&points, cfg.postflop_buckets.get() as usize, 25, seed)
 }
 
 /// EMD between two 1-D equity distributions in quantile form = mean L1
@@ -1569,8 +1571,8 @@ mod tests {
         let board = parse_cards("As Kd 7c").unwrap();
         let nuts = parse_cards("Ah Ac").unwrap(); // set of aces
         let air = parse_cards("5h 4d").unwrap(); // no pair, no draw
-        let fn_ = combined_features([nuts[0], nuts[1]], &board, 24, 40, &mut rng);
-        let fa = combined_features([air[0], air[1]], &board, 24, 40, &mut rng);
+        let fn_ = combined_features([nuts[0], nuts[1]], &board, NonZero::new(24).unwrap(), NonZero::new(40).unwrap(), &mut rng);
+        let fa = combined_features([air[0], air[1]], &board, NonZero::new(24).unwrap(), NonZero::new(40).unwrap(), &mut rng);
         // Quantile block is sorted (a distribution's order statistics).
         for w in fn_[..QUANTILES].windows(2) {
             assert!(w[1] >= w[0] - 1e-6, "quantile block must be sorted");
@@ -1591,12 +1593,12 @@ mod tests {
     #[test]
     fn combined_centroids_are_not_strategic_and_bucket_orders_strength() {
         let cfg = AbsConfig {
-            postflop_buckets: 8,
-            dist_runouts: 12,
-            runout_rollouts: 20,
+            postflop_buckets: NonZero::new(8).unwrap(),
+            dist_runouts: NonZero::new(12).unwrap(),
+            runout_rollouts: NonZero::new(20).unwrap(),
             ..AbsConfig::default()
         };
-        let cents = Centroids::train_combined(&cfg, 400, 0xC0FFEE);
+        let cents = Centroids::train_combined(&cfg, NonZero::new(400).unwrap(), 0xC0FFEE);
         assert!(!cents.is_strategic(), "combined family is self-contained");
         assert_eq!(cents.flop[0].len(), COMBINED_DIM);
         let a = Abstraction::with_centroids(cfg, Some(cents));
@@ -1618,7 +1620,7 @@ mod tests {
         let air = parse_cards("3d 2c").unwrap();
         let bn = a.bucket([nuts[0], nuts[1]], &board, &mut rng);
         let ba = a.bucket([air[0], air[1]], &board, &mut rng);
-        assert_eq!(bn, a.cfg.postflop_buckets - 1, "nuts must be top bucket");
+        assert_eq!(bn, a.cfg.postflop_buckets.get() - 1, "nuts must be top bucket");
         assert!(bn > ba);
         // Memoized: the same query (either card order) returns the same
         // bucket. River queries live in the per-board table, not the
@@ -1688,7 +1690,7 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(21);
         let board = parse_cards("Qs 7s 2d").unwrap();
         let hole = parse_cards("As 9s").unwrap();
-        let q = equity_quantiles([hole[0], hole[1]], &board, 32, 50, &mut rng);
+        let q = equity_quantiles([hole[0], hole[1]], &board, NonZero::new(32).unwrap(), NonZero::new(50).unwrap(), &mut rng);
         for w in q.windows(2) {
             assert!(w[0] <= w[1], "quantiles must be nondecreasing: {:?}", q);
         }
@@ -1704,8 +1706,8 @@ mod tests {
         let board = parse_cards("Qs 7s 2d").unwrap();
         let draw = parse_cards("As 9s").unwrap(); // nut flush draw
         let pair = parse_cards("Qd 8h").unwrap(); // top pair
-        let qd = equity_quantiles([draw[0], draw[1]], &board, 48, 100, &mut rng);
-        let qp = equity_quantiles([pair[0], pair[1]], &board, 48, 100, &mut rng);
+        let qd = equity_quantiles([draw[0], draw[1]], &board, NonZero::new(48).unwrap(), NonZero::new(100).unwrap(), &mut rng);
+        let qp = equity_quantiles([pair[0], pair[1]], &board, NonZero::new(48).unwrap(), NonZero::new(100).unwrap(), &mut rng);
         let spread = |q: &[f32; QUANTILES]| q[QUANTILES - 1] - q[0];
         assert!(
             spread(&qd) > spread(&qp) + 0.1,
@@ -1750,7 +1752,7 @@ mod tests {
     fn river_table_matches_naive_exact_equity() {
         use crate::eval::eval_hole_board;
         let abs = Abstraction::new(AbsConfig {
-            postflop_buckets: 12,
+            postflop_buckets: NonZero::new(12).unwrap(),
             ..AbsConfig::default()
         });
         let board = parse_cards("Qs 7h 2d 9c Kd").unwrap();
@@ -1795,9 +1797,9 @@ mod tests {
     #[test]
     fn bucket_table_roundtrip_matches_lazy_buckets() {
         let cfg = AbsConfig {
-            equity_rollouts: 20,
-            dist_runouts: 6,
-            runout_rollouts: 10,
+            equity_rollouts: NonZero::new(20).unwrap(),
+            dist_runouts: NonZero::new(6).unwrap(),
+            runout_rollouts: NonZero::new(10).unwrap(),
             cache_cap: 1000,
             ..AbsConfig::default()
         };
@@ -1822,13 +1824,13 @@ mod tests {
         );
         let table = BucketTable { cfg: a.cfg.clone(), centroids: None, entries };
         assert!(table.matches(&a.cfg));
-        assert!(!table.matches(&AbsConfig { postflop_buckets: 13, ..a.cfg.clone() }));
+        assert!(!table.matches(&AbsConfig { postflop_buckets: NonZero::new(13).unwrap(), ..a.cfg.clone() }));
     }
 
     #[test]
     fn river_buckets_are_suit_isomorphic() {
         let abs = Abstraction::new(AbsConfig {
-            postflop_buckets: 12,
+            postflop_buckets: NonZero::new(12).unwrap(),
             ..AbsConfig::default()
         });
         let mut rng = rand::rngs::SmallRng::seed_from_u64(2);
@@ -1859,12 +1861,12 @@ mod tests {
     #[test]
     fn kmeans_buckets_separate_monster_from_air() {
         let cfg = AbsConfig {
-            postflop_buckets: 8,
-            dist_runouts: 24,
-            runout_rollouts: 50,
+            postflop_buckets: NonZero::new(8).unwrap(),
+            dist_runouts: NonZero::new(24).unwrap(),
+            runout_rollouts: NonZero::new(50).unwrap(),
             ..AbsConfig::default()
         };
-        let cents = Centroids::train(&cfg, 2_000, 42);
+        let cents = Centroids::train(&cfg, NonZero::new(2_000).unwrap(), 42);
         assert_eq!(cents.flop.len(), 8);
         assert_eq!(cents.turn.len(), 8);
         let a = Abstraction::with_centroids(cfg, Some(cents));
@@ -1881,10 +1883,10 @@ mod tests {
 
     fn small_strat_ctx() -> StratCtx {
         let abs = Arc::new(Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
-            dist_runouts: 8,
-            runout_rollouts: 20,
+            postflop_buckets: NonZero::new(6).unwrap(),
+            equity_rollouts: NonZero::new(40).unwrap(),
+            dist_runouts: NonZero::new(8).unwrap(),
+            runout_rollouts: NonZero::new(20).unwrap(),
             cache_cap: 500_000,
             menu: crate::abstraction::MenuShape::Wide,
         }));
@@ -1940,11 +1942,11 @@ mod tests {
     fn strategic_centroids_bucket_hands() {
         let sc = small_strat_ctx();
         let cfg = AbsConfig {
-            postflop_buckets: 6,
+            postflop_buckets: NonZero::new(6).unwrap(),
             cache_cap: 500_000,
             ..AbsConfig::default()
         };
-        let cents = Centroids::train_strategic(&cfg, 300, 7, &sc);
+        let cents = Centroids::train_strategic(&cfg, NonZero::new(300).unwrap(), 7, &sc);
         assert!(cents.is_strategic());
         assert_eq!(cents.flop.len(), 6);
         let a = Abstraction::with_centroids(cfg, Some(cents)).with_strat(sc);

@@ -409,7 +409,7 @@ mod tests {
     fn a_table_for_another_abstraction_is_refused() {
         let bp = blueprint(100, 9);
         let mut t = table(vec![(1, 1)]);
-        t.cfg.postflop_buckets += 1;
+        t.cfg.postflop_buckets = t.cfg.postflop_buckets.checked_add(1).unwrap();
         let path = std::env::temp_dir().join(format!("nr-compact-refused-{}.bin", std::process::id()));
         assert!(write(&bp, path.to_str().unwrap(), 255, Some(&t)).is_err());
         let _ = std::fs::remove_file(path);

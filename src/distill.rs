@@ -251,14 +251,14 @@ mod tests {
     #[test]
     fn distill_smoke_produces_a_valid_blueprint() {
         let abs_cfg = AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
-            dist_runouts: 8,
-            runout_rollouts: 20,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(40).unwrap(),
+            dist_runouts: std::num::NonZero::new(8).unwrap(),
+            runout_rollouts: std::num::NonZero::new(20).unwrap(),
             cache_cap: 500_000,
             menu: crate::abstraction::MenuShape::Wide,
         };
-        let cents = Centroids::train(&abs_cfg, 300, 5);
+        let cents = Centroids::train(&abs_cfg, std::num::NonZero::new(300).unwrap(), 5);
         let abs = Arc::new(Abstraction::with_centroids(abs_cfg, Some(cents)));
         let hand = HandConfig::new(Players::TWO, Stack::new(1_000).unwrap());
         let tcfg = TrainConfig {

@@ -390,8 +390,8 @@ finishing_stacks = [10325, 9900, 10000, 10000, 9775, 10000]
                 centroids: None,
             },
             Arc::new(Abstraction::new(AbsConfig {
-                postflop_buckets: 6,
-                equity_rollouts: 40,
+                postflop_buckets: std::num::NonZero::new(6).unwrap(),
+                equity_rollouts: std::num::NonZero::new(40).unwrap(),
                 cache_cap: 100_000,
                 ..AbsConfig::default()
             })),
@@ -436,8 +436,8 @@ finishing_stacks = [10325, 9900, 10000, 10000, 9775, 10000]
         // besides the blind: history [f, f] from p3? Seats act p3,p4 first.
         // Build the infoset key the replay will look up: UTG fold then hero.
         let abs = Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(40).unwrap(),
             cache_cap: 100_000,
             ..AbsConfig::default()
         });

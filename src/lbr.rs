@@ -27,6 +27,7 @@ use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
+use std::num::NonZeroU32;
 
 /// The LBR agent's belief over the bot's hole cards.
 pub struct BotRange {
@@ -60,11 +61,11 @@ pub struct Lbr<'a> {
     policy: &'a Policy,
     combos: Vec<[Card; 2]>,
     /// Board completions sampled per equity estimate (exact on the river).
-    runouts: u32,
+    runouts: NonZeroU32,
 }
 
 impl Lbr<'_> {
-    pub fn new(policy: &Policy, runouts: u32) -> Lbr<'_> {
+    pub fn new(policy: &Policy, runouts: NonZeroU32) -> Lbr<'_> {
         Lbr {
             policy,
             combos: all_combos(),
@@ -124,7 +125,7 @@ impl Lbr<'_> {
         let need = 5 - board.len();
         let mut full = [Card::FILL; 5];
         full[..board.len()].copy_from_slice(board);
-        let iters = if need == 0 { 1 } else { self.runouts.max(1) };
+        let iters = if need == 0 { 1 } else { self.runouts.get() };
 
         let mut num = 0.0;
         let mut den = 0.0;
@@ -260,7 +261,7 @@ pub struct LbrResult {
 
 /// Run the LBR probe: LBR and the bot in the two blind seats (alternating by
 /// hand), every other seat folds. Stacks reset per hand, button random.
-pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: u32, seed: u64) -> LbrResult {
+pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: NonZeroU32, seed: u64) -> LbrResult {
     let n = cfg.num_players.get();
     let bb = cfg.blinds.bb() as f64;
     let lbr = Lbr::new(policy, runouts);
@@ -364,7 +365,7 @@ impl Lbr<'_> {
         if cums.iter().any(|c| *c.last().unwrap() <= 0.0) {
             return 0.5;
         }
-        let iters = self.runouts.max(1) as usize * 4;
+        let iters = self.runouts.get() as usize * 4;
         let mut stock = stock;
         let mut score = 0.0;
         let mut count = 0.0;
@@ -554,7 +555,7 @@ pub fn run_lbr_multiway(
     policy: &Policy,
     cfg: &HandConfig,
     hands: u64,
-    runouts: u32,
+    runouts: NonZeroU32,
     seed: u64,
     search: Option<crate::bot::SearchParams>,
 ) -> LbrResult {
@@ -665,10 +666,10 @@ mod tests {
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
-            dist_runouts: 8,
-            runout_rollouts: 20,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(40).unwrap(),
+            dist_runouts: std::num::NonZero::new(8).unwrap(),
+            runout_rollouts: std::num::NonZero::new(20).unwrap(),
             cache_cap: 500_000,
             menu: crate::abstraction::MenuShape::Wide,
         })
@@ -726,7 +727,7 @@ mod tests {
     #[test]
     fn range_equity_is_exact_on_the_river() {
         let policy = empty_policy();
-        let lbr = Lbr::new(&policy, 10);
+        let lbr = Lbr::new(&policy, NonZeroU32::new(10).unwrap());
         let mut rng = SmallRng::seed_from_u64(7);
         let board = parse_cards("Qs Js Ts 3h 4d").unwrap();
         let uniform = vec![1.0; NUM_COMBOS];
@@ -778,7 +779,7 @@ mod tests {
             },
             Arc::new(abs),
         );
-        let lbr = Lbr::new(&policy, 10);
+        let lbr = Lbr::new(&policy, NonZeroU32::new(10).unwrap());
         let mut range = BotRange::new();
         lbr.observe(&mut range, &h, &[], &acts, raise_idx);
 
@@ -795,7 +796,7 @@ mod tests {
     #[test]
     fn lbr_calls_shove_with_nuts_and_folds_air() {
         let policy = empty_policy();
-        let lbr = Lbr::new(&policy, 20);
+        let lbr = Lbr::new(&policy, NonZeroU32::new(20).unwrap());
         let mut rng = SmallRng::seed_from_u64(3);
 
         // Hero holds the royal flush: must call.
@@ -822,7 +823,7 @@ mod tests {
             num_players: Players::TWO,
             ..HandConfig::default()
         };
-        let r = run_lbr(&policy, &cfg, 600, 16, 99);
+        let r = run_lbr(&policy, &cfg, 600, NonZeroU32::new(16).unwrap(), 99);
         assert_eq!(r.hands, 600);
         assert!(
             r.mbb_per_hand - r.ci95 > 1_000.0,
@@ -839,8 +840,8 @@ mod tests {
     fn multiway_lbr_crushes_stations_and_is_deterministic() {
         let policy = empty_policy();
         let cfg = HandConfig::default(); // 6-max
-        let a = run_lbr_multiway(&policy, &cfg, 300, 12, 5, None);
-        let b = run_lbr_multiway(&policy, &cfg, 300, 12, 5, None);
+        let a = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None);
+        let b = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None);
         assert_eq!(a.mbb_per_hand.to_bits(), b.mbb_per_hand.to_bits(), "not deterministic");
         assert!(
             a.mbb_per_hand - a.ci95 > 1_000.0,
@@ -853,7 +854,7 @@ mod tests {
     #[test]
     fn joint_equity_extremes() {
         let policy = empty_policy();
-        let lbr = Lbr::new(&policy, 10);
+        let lbr = Lbr::new(&policy, NonZeroU32::new(10).unwrap());
         let mut rng = SmallRng::seed_from_u64(11);
         let board = parse_cards("Qs Js Ts 3h 4d").unwrap();
         let uniform = vec![1.0; NUM_COMBOS];

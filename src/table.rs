@@ -596,8 +596,8 @@ mod tests {
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(40).unwrap(),
             cache_cap: 100_000,
             ..AbsConfig::default()
         })
@@ -753,10 +753,10 @@ mod tests {
     #[test]
     fn apply_abs_degrades_gracefully_when_shadow_cannot_raise() {
         let abs = Abstraction::new(crate::abstraction::AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 30,
-            dist_runouts: 6,
-            runout_rollouts: 15,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(30).unwrap(),
+            dist_runouts: std::num::NonZero::new(6).unwrap(),
+            runout_rollouts: std::num::NonZero::new(15).unwrap(),
             cache_cap: 100_000,
             menu: crate::abstraction::MenuShape::Wide,
         });

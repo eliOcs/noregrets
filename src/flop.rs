@@ -711,8 +711,8 @@ mod tests {
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(40).unwrap(),
             cache_cap: 100_000,
             ..AbsConfig::default()
         })

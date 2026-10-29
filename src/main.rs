@@ -43,6 +43,7 @@ use clap::{Parser, Subcommand};
 use abstraction::MenuShape;
 use engine::{HandConfig, Players, Stack};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use table::Baseline;
 
@@ -80,8 +81,8 @@ enum Cmd {
         #[arg(long)]
         checkpoint: Option<String>,
         /// Postflop equity buckets per street.
-        #[arg(long, default_value_t = 12)]
-        buckets: u16,
+        #[arg(long, default_value_t = NonZeroU16::new(12).unwrap())]
+        buckets: NonZeroU16,
         /// Bet-size menu shape (stored in the blueprint): pluribus (coarse
         /// postflop, Pluribus's shape; the default, measured least
         /// exploitable), wide (2026-07 menu), or pluribus-fine-pre (also a
@@ -89,19 +90,19 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = MenuShape::Pluribus)]
         menu: MenuShape,
         /// Monte Carlo rollouts per river equity estimate.
-        #[arg(long, default_value_t = 200)]
-        rollouts: u32,
+        #[arg(long, default_value_t = NonZeroU32::new(200).unwrap())]
+        rollouts: NonZeroU32,
         /// Sampled future boards per flop/turn distribution estimate.
-        #[arg(long, default_value_t = 24)]
-        runouts: u32,
+        #[arg(long, default_value_t = NonZeroU32::new(24).unwrap())]
+        runouts: NonZeroU32,
         /// Preloaded flop/turn bucket table from `bucket-table` (same
         /// buckets/rollouts/runouts): skips centroid training and the
         /// Monte Carlo bucketing that otherwise takes ~70% of training.
         #[arg(long)]
         bucket_table: Option<String>,
         /// Situations sampled per street when training k-means centroids.
-        #[arg(long, default_value_t = 30_000)]
-        kmeans_samples: usize,
+        #[arg(long, default_value_t = NonZeroUsize::new(30_000).unwrap())]
+        kmeans_samples: NonZeroUsize,
         /// Use raw-equity bucketing instead of EMD k-means clustering.
         #[arg(long)]
         raw_buckets: bool,
@@ -207,14 +208,14 @@ enum Cmd {
         #[arg(long, default_value = "buckets.bin")]
         out: String,
         /// Postflop equity buckets per street.
-        #[arg(long, default_value_t = 12)]
-        buckets: u16,
-        #[arg(long, default_value_t = 200)]
-        rollouts: u32,
-        #[arg(long, default_value_t = 24)]
-        runouts: u32,
-        #[arg(long, default_value_t = 30_000)]
-        kmeans_samples: usize,
+        #[arg(long, default_value_t = NonZeroU16::new(12).unwrap())]
+        buckets: NonZeroU16,
+        #[arg(long, default_value_t = NonZeroU32::new(200).unwrap())]
+        rollouts: NonZeroU32,
+        #[arg(long, default_value_t = NonZeroU32::new(24).unwrap())]
+        runouts: NonZeroU32,
+        #[arg(long, default_value_t = NonZeroUsize::new(30_000).unwrap())]
+        kmeans_samples: NonZeroUsize,
         #[arg(long)]
         threads: Option<usize>,
     },
@@ -498,8 +499,8 @@ enum Cmd {
         hands: u64,
         /// Board completions per equity estimate on the greedy (preflop/
         /// flop) streets.
-        #[arg(long, default_value_t = 100)]
-        runouts: u32,
+        #[arg(long, default_value_t = NonZeroU32::new(100).unwrap())]
+        runouts: NonZeroU32,
         /// Previous blueprint for strategic-abstraction lookups.
         #[arg(long)]
         strat_prev: Option<String>,
@@ -524,7 +525,7 @@ enum Cmd {
         /// quantiles; exact per board on the river). Default: the
         /// blueprint's.
         #[arg(long)]
-        search_buckets: Option<u16>,
+        search_buckets: Option<NonZeroU16>,
         /// Starting stack in chips: the depth the blueprint was trained at.
         #[arg(long, default_value_t = Stack::DEFAULT)]
         stack: Stack,
@@ -542,8 +543,8 @@ enum Cmd {
         #[arg(long)]
         multiway: bool,
         /// Board completions sampled per equity estimate.
-        #[arg(long, default_value_t = 100)]
-        runouts: u32,
+        #[arg(long, default_value_t = NonZeroU32::new(100).unwrap())]
+        runouts: NonZeroU32,
         /// Previous blueprint for strategic-abstraction lookups.
         #[arg(long)]
         strat_prev: Option<String>,
@@ -568,7 +569,7 @@ enum Cmd {
         /// quantiles; exact per board on the river). Default: the
         /// blueprint's.
         #[arg(long)]
-        search_buckets: Option<u16>,
+        search_buckets: Option<NonZeroU16>,
         /// Starting stack in chips: the depth the blueprint was trained at.
         #[arg(long, default_value_t = Stack::DEFAULT)]
         stack: Stack,

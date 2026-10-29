@@ -303,8 +303,8 @@ mod tests {
     fn off_model_actions_widen_instead_of_concentrating() {
         use crate::abstraction::{preflop_bucket, AbsConfig, Abstraction};
         let abs = Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 30,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(30).unwrap(),
             cache_cap: 100_000,
             ..AbsConfig::default()
         });

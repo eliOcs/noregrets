@@ -417,7 +417,7 @@ pub fn run_br(
     policy: &Policy,
     cfg: &HandConfig,
     hands: u64,
-    runouts: u32,
+    runouts: std::num::NonZeroU32,
     seed: u64,
     search: Option<crate::bot::SearchParams>,
 ) -> BrResult {
@@ -547,10 +547,10 @@ mod tests {
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 40,
-            dist_runouts: 8,
-            runout_rollouts: 20,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(40).unwrap(),
+            dist_runouts: std::num::NonZero::new(8).unwrap(),
+            runout_rollouts: std::num::NonZero::new(20).unwrap(),
             cache_cap: 500_000,
             menu: crate::abstraction::MenuShape::Wide,
         })
@@ -692,8 +692,8 @@ mod tests {
             num_players: Players::TWO,
             ..HandConfig::default()
         };
-        let r1 = run_br(&policy, &cfg, 200, 16, 99, None);
-        let r2 = run_br(&policy, &cfg, 200, 16, 99, None);
+        let r1 = run_br(&policy, &cfg, 200, std::num::NonZero::new(16).unwrap(), 99, None);
+        let r2 = run_br(&policy, &cfg, 200, std::num::NonZero::new(16).unwrap(), 99, None);
         assert_eq!(
             r1.mbb_per_hand, r2.mbb_per_hand,
             "same seed must reproduce exactly"

@@ -96,8 +96,8 @@ fn margins(solver: &RiverSolver, alt: &[f64], truth: &[f64]) -> (f64, f64) {
 
 pub fn run(spots: usize, iters: u64, seed: u64) -> Vec<AblateRow> {
     let abs = Abstraction::new(AbsConfig {
-        postflop_buckets: 6,
-        equity_rollouts: 40,
+        postflop_buckets: std::num::NonZero::new(6).unwrap(),
+        equity_rollouts: std::num::NonZero::new(40).unwrap(),
         cache_cap: 100_000,
         ..AbsConfig::default()
     });

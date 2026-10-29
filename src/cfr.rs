@@ -1037,10 +1037,10 @@ impl Trainer {
 /// On-disk layout of blueprints written before `AbsConfig::menu`.
 #[derive(Deserialize)]
 struct LegacyAbsConfig {
-    postflop_buckets: u16,
-    equity_rollouts: u32,
-    dist_runouts: u32,
-    runout_rollouts: u32,
+    postflop_buckets: std::num::NonZeroU16,
+    equity_rollouts: std::num::NonZeroU32,
+    dist_runouts: std::num::NonZeroU32,
+    runout_rollouts: std::num::NonZeroU32,
     cache_cap: usize,
 }
 
@@ -1185,14 +1185,14 @@ mod tests {
     fn push_fold_trainer() -> Trainer {
         // 10bb heads-up: near push/fold; converges fast and has known properties.
         let abs_cfg = AbsConfig {
-            postflop_buckets: 6,
-            equity_rollouts: 50,
-            dist_runouts: 12,
-            runout_rollouts: 25,
+            postflop_buckets: std::num::NonZero::new(6).unwrap(),
+            equity_rollouts: std::num::NonZero::new(50).unwrap(),
+            dist_runouts: std::num::NonZero::new(12).unwrap(),
+            runout_rollouts: std::num::NonZero::new(25).unwrap(),
             cache_cap: 1_000_000,
             menu: crate::abstraction::MenuShape::Wide,
         };
-        let cents = Centroids::train(&abs_cfg, 400, 99);
+        let cents = Centroids::train(&abs_cfg, std::num::NonZero::new(400).unwrap(), 99);
         let abs = Abstraction::with_centroids(abs_cfg, Some(cents));
         let cfg = TrainConfig {
             hand: HandConfig::new(Players::TWO, Stack::new(1_000).unwrap()),
@@ -1637,7 +1637,7 @@ mod tests {
         assert_eq!(t2.node_count(), n_before);
         assert_eq!(t2.iterations(), iters_before);
         // Abstraction restored from the checkpoint, not from caller flags.
-        assert_eq!(t2.abs.cfg.postflop_buckets, 6);
+        assert_eq!(t2.abs.cfg.postflop_buckets.get(), 6);
         assert_eq!(t2.abs.centroids, t.abs.centroids);
         // Resumed trainer can keep training.
         t2.run(500, &|_| {});
@@ -1648,7 +1648,7 @@ mod tests {
         let bp2 = Blueprint::load(bp_s).unwrap();
         assert_eq!(bp.strategies.len(), bp2.strategies.len());
         assert_eq!(bp2.num_players, Players::TWO);
-        assert_eq!(bp2.abs_cfg.postflop_buckets, 6);
+        assert_eq!(bp2.abs_cfg.postflop_buckets.get(), 6);
         assert_eq!(bp2.centroids, t.abs.centroids);
         // Strategies are normalized distributions.
         for (_, s) in bp2.strategies.iter().take(50) {
