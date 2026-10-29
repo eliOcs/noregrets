@@ -30,14 +30,14 @@ const HARD_FLOOR: f64 = 1e-3;
 #[inline]
 pub fn combo_index(a: Card, b: Card) -> usize {
     let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-    hi as usize * (hi as usize - 1) / 2 + lo as usize
+    hi.index() * (hi.index() - 1) / 2 + lo.index()
 }
 
 /// All 1326 combos, indexed by `combo_index`.
 pub fn all_combos() -> Vec<[Card; 2]> {
     let mut v = Vec::with_capacity(NUM_COMBOS);
-    for hi in 1..52u8 {
-        for lo in 0..hi {
+    for (h, &hi) in Card::ALL.iter().enumerate() {
+        for &lo in &Card::ALL[..h] {
             v.push([lo, hi]);
         }
     }
@@ -131,7 +131,7 @@ impl RangeTracker {
     /// then marking) `used` cards. None when no compatible combo is left.
     pub fn sample_hard(&self, seat: usize, used: &mut [bool; 52], rng: &mut SmallRng) -> Option<[Card; 2]> {
         let w = &self.hard[seat];
-        let ok = |ci: usize| w[ci] > 0.0 && !used[self.combos[ci][0] as usize] && !used[self.combos[ci][1] as usize];
+        let ok = |ci: usize| w[ci] > 0.0 && !used[self.combos[ci][0].index()] && !used[self.combos[ci][1].index()];
         let total: f64 = (0..NUM_COMBOS).filter(|&ci| ok(ci)).map(|ci| w[ci]).sum();
         if total <= 0.0 {
             return None;
@@ -146,8 +146,8 @@ impl RangeTracker {
             }
         }
         let combo = self.combos[last?];
-        used[combo[0] as usize] = true;
-        used[combo[1] as usize] = true;
+        used[combo[0].index()] = true;
+        used[combo[1].index()] = true;
         Some(combo)
     }
 
@@ -250,7 +250,7 @@ impl RangeTracker {
         let mut out: [Option<[Card; 2]>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         let mut used = [false; 52];
         for &c in h.board() {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         for (seat, slot) in out.iter_mut().enumerate().take(self.n) {
             if h.folded(seat) {
@@ -259,7 +259,7 @@ impl RangeTracker {
             let w = &self.weights[seat];
             let mut total = 0.0;
             for (ci, combo) in self.combos.iter().enumerate() {
-                if w[ci] > 0.0 && !used[combo[0] as usize] && !used[combo[1] as usize] {
+                if w[ci] > 0.0 && !used[combo[0].index()] && !used[combo[1].index()] {
                     total += w[ci];
                 }
             }
@@ -268,12 +268,12 @@ impl RangeTracker {
             }
             let mut r = rng.random::<f64>() * total;
             for (ci, combo) in self.combos.iter().enumerate() {
-                if w[ci] > 0.0 && !used[combo[0] as usize] && !used[combo[1] as usize] {
+                if w[ci] > 0.0 && !used[combo[0].index()] && !used[combo[1].index()] {
                     r -= w[ci];
                     if r <= 0.0 {
                         *slot = Some(*combo);
-                        used[combo[0] as usize] = true;
-                        used[combo[1] as usize] = true;
+                        used[combo[0].index()] = true;
+                        used[combo[1].index()] = true;
                         break;
                     }
                 }
@@ -310,7 +310,7 @@ mod tests {
         });
         let h = crate::engine::Hand::new(&HandConfig::default(), 0, fresh_deck());
         let acts = abs.abstract_actions(&h);
-        let aa = preflop_bucket([51, 50]);
+        let aa = preflop_bucket([Card::ALL[51], Card::ALL[50]]);
         let raise_idx = acts
             .iter()
             .position(|a| matches!(a, crate::abstraction::AbsAction::Bet(_)))
@@ -377,7 +377,7 @@ mod tests {
         let h = Hand::new(&HandConfig::default(), 0, fresh_deck());
         let acts = abs.abstract_actions(&h); // UTG: [Fold, CheckCall, bets..., AllIn]
         let n_acts = acts.len();
-        let aa = preflop_bucket([51, 50]); // any two aces
+        let aa = preflop_bucket([Card::ALL[51], Card::ALL[50]]); // any two aces
         let raise_idx = acts
             .iter()
             .position(|a| matches!(a, AbsAction::Bet(_)))

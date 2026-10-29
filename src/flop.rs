@@ -160,9 +160,9 @@ impl<'a> FlopSolver<'a> {
         debug_assert_eq!(board.len(), 3);
         let mut on_board = [false; 52];
         for &c in &board {
-            on_board[c as usize] = true;
+            on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0] as usize] && !on_board[c[1] as usize];
+        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut range = [vec![0.0; NUM_COMBOS], vec![0.0; NUM_COMBOS]];
         for (pi, r) in range.iter_mut().enumerate() {
@@ -181,12 +181,12 @@ impl<'a> FlopSolver<'a> {
             }
         }
 
-        let turns: Vec<Card> = (0..52u8).filter(|&c| !on_board[c as usize]).collect();
+        let turns: Vec<Card> = Card::ALL.into_iter().filter(|&c| !on_board[c.index()]).collect();
         let query_turns: Vec<usize> = if max_query_turns >= turns.len() {
             (0..turns.len()).collect()
         } else {
             // Deterministic per spot: seed from the flop cards.
-            let seed = board.iter().fold(0xF10Cu64, |a, &c| a * 53 + c as u64);
+            let seed = board.iter().fold(0xF10Cu64, |a, &c| a * 53 + (c.index() as u64));
             let mut rng = SmallRng::seed_from_u64(seed);
             let mut idx: Vec<usize> = (0..turns.len()).collect();
             for k in 0..max_query_turns {
@@ -412,8 +412,8 @@ impl<'a> FlopSolver<'a> {
             let w = opp[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
         (0..NUM_COMBOS)
@@ -422,7 +422,7 @@ impl<'a> FlopSolver<'a> {
                     return 0.0;
                 }
                 let c = self.combos[ci];
-                let compat = total - card[c[0] as usize] - card[c[1] as usize] + opp[ci];
+                let compat = total - card[c[0].index()] - card[c[1].index()] + opp[ci];
                 if compat <= 0.0 {
                     return 0.0;
                 }
@@ -568,8 +568,8 @@ impl<'a> FlopSolver<'a> {
                 let w = reach_opp[ci];
                 if w > 0.0 && combo[0] != tc && combo[1] != tc {
                     total += w;
-                    card[combo[0] as usize] += w;
-                    card[combo[1] as usize] += w;
+                    card[combo[0].index()] += w;
+                    card[combo[1].index()] += w;
                 }
             }
             for (ci, combo) in self.combos.iter().enumerate() {
@@ -578,7 +578,7 @@ impl<'a> FlopSolver<'a> {
                 }
                 counts[ci] += 1;
                 let compat =
-                    total - card[combo[0] as usize] - card[combo[1] as usize] + reach_opp[ci];
+                    total - card[combo[0].index()] - card[combo[1].index()] + reach_opp[ci];
                 if compat > 0.0 {
                     vals[ci] += (vhat[ci] - leaf.commit[u]) * compat;
                 }
@@ -621,14 +621,14 @@ impl<'a> FlopSolver<'a> {
                     let w = reach_opp[ci];
                     if w > 0.0 {
                         total += w;
-                        card[combo[0] as usize] += w;
-                        card[combo[1] as usize] += w;
+                        card[combo[0].index()] += w;
+                        card[combo[1].index()] += w;
                     }
                 }
                 let mut vals = vec![0.0; NUM_COMBOS];
                 for (ci, combo) in self.combos.iter().enumerate() {
                     let excl =
-                        total - card[combo[0] as usize] - card[combo[1] as usize] + reach_opp[ci];
+                        total - card[combo[0].index()] - card[combo[1].index()] + reach_opp[ci];
                     if excl != 0.0 {
                         vals[ci] = util[u] * excl;
                     }
@@ -653,8 +653,8 @@ impl<'a> FlopSolver<'a> {
                             masked[ci] = 0.0;
                         } else if masked[ci] > 0.0 {
                             total += masked[ci];
-                            card[combo[0] as usize] += masked[ci];
-                            card[combo[1] as usize] += masked[ci];
+                            card[combo[0].index()] += masked[ci];
+                            card[combo[1].index()] += masked[ci];
                         }
                     }
                     let sv = showdown_sweep(
@@ -748,12 +748,12 @@ mod tests {
                         }
                         let mut used = [false; 52];
                         for &b in board {
-                            used[b as usize] = true;
+                            used[b.index()] = true;
                         }
-                        used[c[0] as usize] = true;
-                        used[c[1] as usize] = true;
+                        used[c[0].index()] = true;
+                        used[c[1].index()] = true;
                         let stock: Vec<Card> =
-                            (0..52).filter(|&x| !used[x as usize]).collect();
+                            Card::ALL.into_iter().filter(|&x| !used[x.index()]).collect();
                         let mut num = 0.0;
                         let mut den = 0.0;
                         for _ in 0..3 {
@@ -800,11 +800,11 @@ mod tests {
         let mut used = [false; 52];
         for (i, &c) in front.iter().enumerate() {
             deck[i] = c;
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         let mut idx = front.len();
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
             }

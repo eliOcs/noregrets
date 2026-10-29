@@ -5,7 +5,7 @@
 //! postflop Monte Carlo equity vs one random hand, quantized into buckets,
 //! memoized in a lock-free cache keyed exactly (packed cards, no hash collisions).
 
-use crate::cards::{fresh_deck, make_card, rank, Card};
+use crate::cards::{fresh_deck, Card, Rank, Suit};
 use crate::engine::{Hand, PlayerAction, Street};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
@@ -253,13 +253,13 @@ fn standard_state(hole: [Card; 2], board: &[Card]) -> (crate::engine::Hand, Vec<
         bb: 100,
     };
     let mut used = [false; 52];
-    used[hole[0] as usize] = true;
-    used[hole[1] as usize] = true;
+    used[hole[0].index()] = true;
+    used[hole[1].index()] = true;
     for &c in board {
-        used[c as usize] = true;
+        used[c.index()] = true;
     }
-    let mut free = (0..52u8).filter(|&c| !used[c as usize]);
-    let mut deck = [0u8; 52];
+    let mut free = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
+    let mut deck = [Card::FILL; 52];
     // p0 = dummy villain (resampled per rollout), p1 = hero (first to act
     // postflop heads-up), board at deck[4..9].
     deck[0] = free.next().unwrap();
@@ -398,7 +398,7 @@ impl Abstraction {
                 .par_iter()
                 .flat_map_iter(|&hole| {
                     let mut out = Vec::new();
-                    let rest: Vec<Card> = (0..52u8).filter(|&c| c != hole[0] && c != hole[1]).collect();
+                    let rest: Vec<Card> = Card::ALL.into_iter().filter(|&c| c != hole[0] && c != hole[1]).collect();
                     let mut idx = vec![0usize; street_len];
                     for (i, v) in idx.iter_mut().enumerate() {
                         *v = i;
@@ -663,7 +663,7 @@ impl Abstraction {
         struct Memo {
             board: [Card; 5],
             buckets: u16,
-            perm: [u8; 4],
+            perm: SuitPerm,
             table: std::sync::Arc<Vec<u16>>,
         }
         thread_local! {
@@ -705,7 +705,7 @@ impl Abstraction {
                 (perm, table)
             }
         };
-        let map = |c: Card| (c & !3) | perm[(c & 3) as usize];
+        let map = |c: Card| permute(c, &perm);
         table[crate::search::combo_index(map(hole[0]), map(hole[1]))]
     }
 
@@ -728,10 +728,10 @@ impl Abstraction {
 /// Canonical preflop hand index in 0..169.
 /// Pairs on the diagonal, suited above it, offsuit below.
 pub fn preflop_bucket(hole: [Card; 2]) -> u16 {
-    let (r1, r2) = (rank(hole[0]) as u16, rank(hole[1]) as u16);
+    let (r1, r2) = (hole[0].rank().index() as u16, hole[1].rank().index() as u16);
     let hi = r1.max(r2);
     let lo = r1.min(r2);
-    let suited = (hole[0] & 3) == (hole[1] & 3);
+    let suited = hole[0].suit() == hole[1].suit();
     if suited && hi != lo {
         hi * 13 + lo
     } else {
@@ -739,13 +739,34 @@ pub fn preflop_bucket(hole: [Card; 2]) -> u16 {
     }
 }
 
+/// A relabeling of the four suits: suit `s` becomes `perm[s.index()]`.
+type SuitPerm = [Suit; 4];
+
 /// All 24 permutations of the four suits.
-const SUIT_PERMS: [[u8; 4]; 24] = [
-    [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 2, 3, 1], [0, 3, 1, 2], [0, 3, 2, 1],
-    [1, 0, 2, 3], [1, 0, 3, 2], [1, 2, 0, 3], [1, 2, 3, 0], [1, 3, 0, 2], [1, 3, 2, 0],
-    [2, 0, 1, 3], [2, 0, 3, 1], [2, 1, 0, 3], [2, 1, 3, 0], [2, 3, 0, 1], [2, 3, 1, 0],
-    [3, 0, 1, 2], [3, 0, 2, 1], [3, 1, 0, 2], [3, 1, 2, 0], [3, 2, 0, 1], [3, 2, 1, 0],
-];
+const SUIT_PERMS: [SuitPerm; 24] = {
+    const IDX: [[usize; 4]; 24] = [
+        [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 2, 3, 1], [0, 3, 1, 2], [0, 3, 2, 1],
+        [1, 0, 2, 3], [1, 0, 3, 2], [1, 2, 0, 3], [1, 2, 3, 0], [1, 3, 0, 2], [1, 3, 2, 0],
+        [2, 0, 1, 3], [2, 0, 3, 1], [2, 1, 0, 3], [2, 1, 3, 0], [2, 3, 0, 1], [2, 3, 1, 0],
+        [3, 0, 1, 2], [3, 0, 2, 1], [3, 1, 0, 2], [3, 1, 2, 0], [3, 2, 0, 1], [3, 2, 1, 0],
+    ];
+    let mut perms = [Suit::ALL; 24];
+    let mut p = 0;
+    while p < 24 {
+        let mut s = 0;
+        while s < 4 {
+            perms[p][s] = Suit::ALL[IDX[p][s]];
+            s += 1;
+        }
+        p += 1;
+    }
+    perms
+};
+
+#[inline(always)]
+fn permute(c: Card, perm: &SuitPerm) -> Card {
+    c.with_suit(perm[c.suit().index()])
+}
 
 /// Canonical key for a (hole, board) pair under suit isomorphism: the
 /// lexicographically smallest packed key over all 24 suit relabelings.
@@ -755,19 +776,19 @@ const SUIT_PERMS: [[u8; 4]; 24] = [
 pub(crate) fn canonical_cards_key(hole: [Card; 2], board: &[Card]) -> u64 {
     let mut best = u64::MAX;
     for perm in &SUIT_PERMS {
-        let map = |c: Card| (c & !3) | perm[(c & 3) as usize];
+        let map = |c: Card| permute(c, perm);
         let h = [map(hole[0]), map(hole[1])];
-        let mut b = [0u8; 5];
+        let mut b = [Card::FILL; 5];
         for (dst, &src) in b.iter_mut().zip(board) {
             *dst = map(src);
         }
         let b = &mut b[..board.len()];
         b.sort_unstable();
         let mut key = board.len() as u64;
-        key = (key << 6) | h[0].min(h[1]) as u64;
-        key = (key << 6) | h[0].max(h[1]) as u64;
+        key = (key << 6) | (h[0].min(h[1]).index() as u64);
+        key = (key << 6) | (h[0].max(h[1]).index() as u64);
         for &c in b.iter() {
-            key = (key << 6) | c as u64;
+            key = (key << 6) | (c.index() as u64);
         }
         best = best.min(key);
     }
@@ -781,8 +802,10 @@ fn decode_cards_key(key: u64) -> ([Card; 2], [Card; 5]) {
     let len = (1..=5)
         .find(|&n| key >> (6 * (2 + n)) == n as u64)
         .expect("a canonical cards key");
-    let card = |i: usize| ((key >> (6 * (1 + len - i))) & 0x3f) as Card;
-    let mut board = [0; 5];
+    let card = |i: usize| {
+        Card::from_index(((key >> (6 * (1 + len - i))) & 0x3f) as usize).expect("a packed card")
+    };
+    let mut board = [Card::FILL; 5];
     for (i, b) in board.iter_mut().enumerate().take(len) {
         *b = card(2 + i);
     }
@@ -793,15 +816,15 @@ fn decode_cards_key(key: u64) -> ([Card; 2], [Card; 5]) {
 /// (equal to the canonical key exactly when the pair is its own
 /// representative).
 fn identity_key(hole: [Card; 2], board: &[Card]) -> u64 {
-    let mut b = [0u8; 5];
+    let mut b = [Card::FILL; 5];
     b[..board.len()].copy_from_slice(board);
     let b = &mut b[..board.len()];
     b.sort_unstable();
     let mut key = board.len() as u64;
-    key = (key << 6) | hole[0].min(hole[1]) as u64;
-    key = (key << 6) | hole[0].max(hole[1]) as u64;
+    key = (key << 6) | (hole[0].min(hole[1]).index() as u64);
+    key = (key << 6) | (hole[0].max(hole[1]).index() as u64);
     for &c in b.iter() {
-        key = (key << 6) | c as u64;
+        key = (key << 6) | (c.index() as u64);
     }
     key
 }
@@ -837,7 +860,7 @@ impl BucketTable {
 
 /// Exact cache key: up to 7 cards, sorted, 6 bits each, plus board length.
 fn pack_cards_key(hole: [Card; 2], board: &[Card]) -> u64 {
-    let mut cards = [0u8; 7];
+    let mut cards = [Card::FILL; 7];
     cards[0] = hole[0].min(hole[1]);
     cards[1] = hole[0].max(hole[1]);
     let mut b: Vec<Card> = board.to_vec();
@@ -847,25 +870,25 @@ fn pack_cards_key(hole: [Card; 2], board: &[Card]) -> u64 {
     }
     let mut key = board.len() as u64;
     for &c in cards.iter().take(2 + board.len()) {
-        key = (key << 6) | c as u64;
+        key = (key << 6) | (c.index() as u64);
     }
     key
 }
 
 /// Suit-canonical form of a 5-card board: the permutation of suits (from
 /// the 24) minimizing the packed sorted-board key, and that key.
-fn canonical_board(board: &[Card]) -> (u64, [u8; 4]) {
+fn canonical_board(board: &[Card]) -> (u64, SuitPerm) {
     let mut best_key = u64::MAX;
     let mut best_perm = SUIT_PERMS[0];
     for perm in &SUIT_PERMS {
-        let mut b = [0u8; 5];
+        let mut b = [Card::FILL; 5];
         for (dst, &src) in b.iter_mut().zip(board) {
-            *dst = (src & !3) | perm[(src & 3) as usize];
+            *dst = permute(src, perm);
         }
         b.sort_unstable();
         let mut key = 0u64;
         for &c in &b {
-            key = (key << 6) | c as u64;
+            key = (key << 6) | (c.index() as u64);
         }
         if key < best_key {
             best_key = key;
@@ -875,8 +898,8 @@ fn canonical_board(board: &[Card]) -> (u64, [u8; 4]) {
     (best_key, best_perm)
 }
 
-fn apply_perm(board: &[Card], perm: &[u8; 4]) -> Vec<Card> {
-    board.iter().map(|&c| (c & !3) | perm[(c & 3) as usize]).collect()
+fn apply_perm(board: &[Card], perm: &SuitPerm) -> Vec<Card> {
+    board.iter().map(|&c| permute(c, perm)).collect()
 }
 
 /// Exact river-equity bucket for every hole combo on `board` in one O(N)
@@ -890,12 +913,12 @@ fn build_river_table(board: &[Card], nb: u16) -> Vec<u16> {
     let board5 = [board[0], board[1], board[2], board[3], board[4]];
     let mut on_board = [false; 52];
     for &c in board {
-        on_board[c as usize] = true;
+        on_board[c.index()] = true;
     }
     let rank: Vec<u32> = combos
         .iter()
         .map(|c| {
-            if on_board[c[0] as usize] || on_board[c[1] as usize] {
+            if on_board[c[0].index()] || on_board[c[1].index()] {
                 0
             } else {
                 eval_hole_board(c, &board5)
@@ -914,8 +937,8 @@ fn build_river_table(board: &[Card], nb: u16) -> Vec<u16> {
         let c = combos[ci as usize];
         reach[ci as usize] = 1.0;
         total += 1.0;
-        card[c[0] as usize] += 1.0;
-        card[c[1] as usize] += 1.0;
+        card[c[0].index()] += 1.0;
+        card[c[1].index()] += 1.0;
     }
     // matched = 1, dead = 0: sweep value = (weaker − stronger) mass, so
     // equity = (weaker + tie/2) / compat = 0.5 + value / (2·compat).
@@ -924,7 +947,7 @@ fn build_river_table(board: &[Card], nb: u16) -> Vec<u16> {
     for &ci in &sorted {
         let ci = ci as usize;
         let c = combos[ci];
-        let compat = total - card[c[0] as usize] - card[c[1] as usize] + 1.0;
+        let compat = total - card[c[0].index()] - card[c[1].index()] + 1.0;
         let eq = 0.5 + v[ci] / (2.0 * compat);
         out[ci] = ((eq * nb as f64) as u16).min(nb - 1);
     }
@@ -938,15 +961,15 @@ fn equity_vs_random(hole: [Card; 2], board: &[Card], rollouts: u32, rng: &mut Sm
     use rand::Rng;
 
     let mut used = [false; 52];
-    used[hole[0] as usize] = true;
-    used[hole[1] as usize] = true;
+    used[hole[0].index()] = true;
+    used[hole[1].index()] = true;
     for &c in board {
-        used[c as usize] = true;
+        used[c.index()] = true;
     }
-    let mut rem = [0u8; 52];
+    let mut rem = [Card::FILL; 52];
     let mut rem_len = 0;
-    for c in 0..52u8 {
-        if !used[c as usize] {
+    for c in Card::ALL {
+        if !used[c.index()] {
             rem[rem_len] = c;
             rem_len += 1;
         }
@@ -954,7 +977,7 @@ fn equity_vs_random(hole: [Card; 2], board: &[Card], rollouts: u32, rng: &mut Sm
     let need_board = 5 - board.len();
     let draw = 2 + need_board;
 
-    let mut full_board = [0u8; 5];
+    let mut full_board = [Card::FILL; 5];
     full_board[..board.len()].copy_from_slice(board);
 
     let mut score = 0.0f64;
@@ -994,21 +1017,21 @@ pub fn equity_quantiles(
     debug_assert!(!board.is_empty() && board.len() < 5);
 
     let mut used = [false; 52];
-    used[hole[0] as usize] = true;
-    used[hole[1] as usize] = true;
+    used[hole[0].index()] = true;
+    used[hole[1].index()] = true;
     for &c in board {
-        used[c as usize] = true;
+        used[c.index()] = true;
     }
-    let mut unseen = [0u8; 52];
+    let mut unseen = [Card::FILL; 52];
     let mut unseen_len = 0;
-    for c in 0..52u8 {
-        if !used[c as usize] {
+    for c in Card::ALL {
+        if !used[c.index()] {
             unseen[unseen_len] = c;
             unseen_len += 1;
         }
     }
     let need = 5 - board.len();
-    let mut full = [0u8; 5];
+    let mut full = [Card::FILL; 5];
     full[..board.len()].copy_from_slice(board);
 
     let mut eqs: Vec<f32> = Vec::with_capacity(runouts as usize);
@@ -1042,14 +1065,15 @@ fn preflop_tiers() -> &'static [u8; 169] {
         // Representative hole cards for each preflop bucket, then MC equity.
         let mut eq = [0f32; 169];
         for (b, e) in eq.iter_mut().enumerate() {
-            let a = (b / 13) as u8;
-            let c = (b % 13) as u8;
+            let a = Rank::ALL[b / 13];
+            let c = Rank::ALL[b % 13];
+            let [s0, s1, ..] = Suit::ALL;
             let hole = if a == c {
-                [make_card(a, 0), make_card(a, 1)] // pair
+                [Card::new(a, s0), Card::new(a, s1)] // pair
             } else if a > c {
-                [make_card(a, 0), make_card(c, 0)] // suited hi,lo
+                [Card::new(a, s0), Card::new(c, s0)] // suited hi,lo
             } else {
-                [make_card(c, 0), make_card(a, 1)] // offsuit hi=c, lo=a
+                [Card::new(c, s0), Card::new(a, s1)] // offsuit hi=c, lo=a
             };
             let mut rng = SmallRng::seed_from_u64(0x0C45_0000 ^ b as u64);
             *e = equity_vs_random(hole, &[], 800, &mut rng) as f32;
@@ -1085,21 +1109,21 @@ pub fn combined_features(
     let q = equity_quantiles(hole, board, runouts, rollouts, rng);
 
     let mut used = [false; 52];
-    used[hole[0] as usize] = true;
-    used[hole[1] as usize] = true;
+    used[hole[0].index()] = true;
+    used[hole[1].index()] = true;
     for &c in board {
-        used[c as usize] = true;
+        used[c.index()] = true;
     }
-    let mut unseen = [0u8; 52];
+    let mut unseen = [Card::FILL; 52];
     let mut unseen_len = 0;
-    for c in 0..52u8 {
-        if !used[c as usize] {
+    for c in Card::ALL {
+        if !used[c.index()] {
             unseen[unseen_len] = c;
             unseen_len += 1;
         }
     }
     let need = 5 - board.len();
-    let mut full = [0u8; 5];
+    let mut full = [Card::FILL; 5];
     full[..board.len()].copy_from_slice(board);
     let tiers = preflop_tiers();
 
@@ -1295,8 +1319,8 @@ mod tests {
     #[test]
     fn preflop_buckets_are_canonical_169() {
         let mut set = HashSet::new();
-        for a in 0..52u8 {
-            for b in 0..52u8 {
+        for a in Card::ALL {
+            for b in Card::ALL {
                 if a != b {
                     set.insert(preflop_bucket([a, b]));
                 }
@@ -1485,7 +1509,7 @@ mod tests {
         assert_eq!(identity_key(rh, &rb[..4]), ckey, "decodes to the representative");
         let rep = abs.bucket(rh, &rb[..4], &mut rng);
         for perm in &SUIT_PERMS {
-            let map = |c: Card| (c & !3) | perm[(c & 3) as usize];
+            let map = |c: Card| permute(c, perm);
             let b: Vec<Card> = board.iter().map(|&c| map(c)).collect();
             assert_eq!(fresh().bucket([map(hole[0]), map(hole[1])], &b, &mut rng), rep);
         }
@@ -1713,12 +1737,12 @@ mod tests {
             let hero = eval_hole_board(&hole, &board5);
             let mut used = [false; 52];
             for &c in board.iter().chain(hole.iter()) {
-                used[c as usize] = true;
+                used[c.index()] = true;
             }
             let (mut num, mut den) = (0.0f64, 0.0f64);
-            for a in 0..52u8 {
-                for b in (a + 1)..52 {
-                    if used[a as usize] || used[b as usize] {
+            for a in Card::ALL {
+                for &b in &Card::ALL[a.index() + 1..] {
+                    if used[a.index()] || used[b.index()] {
                         continue;
                     }
                     let v = eval_hole_board(&[a, b], &board5);
@@ -1787,14 +1811,14 @@ mod tests {
         let hole = parse_cards("Qh Jh").unwrap();
         let b0 = abs.bucket([hole[0], hole[1]], &board, &mut rng);
         // Swap hearts and spades, and clubs and diamonds, everywhere.
-        let swap = |c: Card| {
-            let (r, s) = (c & !3, c & 3);
-            r | match s {
-                0 => 1,
-                1 => 0,
-                2 => 3,
-                _ => 2,
-            }
+        let [c, d, h, s] = Suit::ALL;
+        let swap = |x: Card| {
+            x.with_suit(match x.suit() {
+                y if y == c => d,
+                y if y == d => c,
+                y if y == h => s,
+                _ => h,
+            })
         };
         let board2: Vec<Card> = board.iter().map(|&c| swap(c)).collect();
         let hole2 = [swap(hole[0]), swap(hole[1])];

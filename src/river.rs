@@ -91,9 +91,9 @@ impl RiverSolver {
         let board: Vec<Card> = h.board().to_vec();
         let mut on_board = [false; 52];
         for &c in &board {
-            on_board[c as usize] = true;
+            on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0] as usize] && !on_board[c[1] as usize];
+        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut range = [vec![0.0; NUM_COMBOS], vec![0.0; NUM_COMBOS]];
         for (pi, r) in range.iter_mut().enumerate() {
@@ -323,15 +323,15 @@ impl RiverSolver {
             let w = hero[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
         let compats: Vec<f64> = self
             .combos
             .iter()
             .enumerate()
-            .map(|(ci, c)| total - card[c[0] as usize] - card[c[1] as usize] + hero[ci])
+            .map(|(ci, c)| total - card[c[0].index()] - card[c[1].index()] + hero[ci])
             .collect();
         let g = self.gadget.as_mut().unwrap();
         for ci in 0..NUM_COMBOS {
@@ -438,14 +438,14 @@ impl RiverSolver {
             let w = opp[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
         self.combos
             .iter()
             .enumerate()
-            .map(|(ci, c)| total - card[c[0] as usize] - card[c[1] as usize] + opp[ci])
+            .map(|(ci, c)| total - card[c[0].index()] - card[c[1].index()] + opp[ci])
             .collect()
     }
 
@@ -577,8 +577,8 @@ impl RiverSolver {
             let w = reach_opp[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
 
@@ -588,7 +588,7 @@ impl RiverSolver {
                 for &ci in &self.sorted {
                     let ci = ci as usize;
                     let c = self.combos[ci];
-                    let excl = total - card[c[0] as usize] - card[c[1] as usize] + reach_opp[ci];
+                    let excl = total - card[c[0].index()] - card[c[1].index()] + reach_opp[ci];
                     vals[ci] = util[u] * excl;
                 }
                 vals
@@ -692,15 +692,15 @@ pub(crate) fn showdown_sweep(
             if w > 0.0 {
                 grp_total += w;
                 let c = combos[ci];
-                grp_card[c[0] as usize] += w;
-                grp_card[c[1] as usize] += w;
+                grp_card[c[0].index()] += w;
+                grp_card[c[1].index()] += w;
             }
             j += 1;
         }
         for &ck in &sorted[i..j] {
             let ci = ck as usize;
             let c = combos[ci];
-            let (c0, c1) = (c[0] as usize, c[1] as usize);
+            let (c0, c1) = (c[0].index(), c[1].index());
             // Opponent combos not sharing a card with ours:
             let valid_total = total - card[c0] - card[c1] + reach_opp[ci];
             let weaker = below_total - below_card[c0] - below_card[c1];
@@ -747,11 +747,11 @@ mod tests {
         let mut used = [false; 52];
         for (i, &c) in front.iter().enumerate() {
             deck[i] = c;
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         let mut idx = front.len();
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
             }
@@ -809,8 +809,8 @@ mod tests {
                 let w = if solver.rank[ci] > 0 { reach[ci] } else { 0.0 };
                 if w > 0.0 {
                     total += w;
-                    card[c[0] as usize] += w;
-                    card[c[1] as usize] += w;
+                    card[c[0].index()] += w;
+                    card[c[1].index()] += w;
                 }
             }
             let masked: Vec<f64> = (0..NUM_COMBOS)

@@ -57,7 +57,7 @@ pub fn value_scale(pot: u32, stack: [u32; 2]) -> f32 {
 pub fn encode(board: &[Card], pot: u32, stack: [u32; 2], range: [&[f32]; 2]) -> Vec<f32> {
     let mut x = vec![0.0f32; INPUT_DIM];
     for &c in board {
-        x[c as usize] = 1.0;
+        x[c.index()] = 1.0;
     }
     x[52] = pot as f32 / 10_000.0;
     x[53] = stack[0] as f32 / 10_000.0;
@@ -142,12 +142,12 @@ fn sample_one(
     let alpha = rng.random::<f64>().powi(2);
     let mut on_board = [false; 52];
     for &c in h.board() {
-        on_board[c as usize] = true;
+        on_board[c.index()] = true;
     }
     let combos = crate::search::all_combos();
     let valid: Vec<bool> = combos
         .iter()
-        .map(|c| !on_board[c[0] as usize] && !on_board[c[1] as usize])
+        .map(|c| !on_board[c[0].index()] && !on_board[c[1].index()])
         .collect();
     let n_valid = valid.iter().filter(|&&v| v).count() as f64;
     let mix = |w: &[f64]| -> Vec<f64> {

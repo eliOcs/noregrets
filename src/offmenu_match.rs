@@ -10,7 +10,7 @@
 //! resized bet, as it does at a real table.
 
 use crate::abstraction::{AbsAction, Abstraction};
-use crate::cards::fresh_deck;
+use crate::cards::{fresh_deck, Card};
 use crate::cfr::sample_index;
 use crate::engine::{HandConfig, PlayerAction};
 use crate::mirror::{Bot, Mirror};
@@ -80,7 +80,7 @@ fn play(
     resize: Option<Resize>,
     hero: usize,
     button: usize,
-    deck: [u8; 52],
+    deck: [Card; 52],
     seed: u64,
 ) -> (i64, u64, u64) {
     let mut rng = SmallRng::seed_from_u64(seed);

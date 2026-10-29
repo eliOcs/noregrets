@@ -5,7 +5,7 @@
 //! Categories: 0 high card, 1 pair, 2 two pair, 3 trips, 4 straight,
 //! 5 flush, 6 full house, 7 quads, 8 straight flush.
 
-use crate::cards::{rank, suit, Card};
+use crate::cards::Card;
 
 pub const CAT_HIGH: u32 = 0;
 pub const CAT_PAIR: u32 = 1;
@@ -68,8 +68,8 @@ pub fn eval7(cards: &[Card; 7]) -> u32 {
     let mut counts = [0u8; 13];
     let mut suit_masks = [0u16; 4];
     for &c in cards {
-        counts[rank(c) as usize] += 1;
-        suit_masks[suit(c) as usize] |= 1 << rank(c);
+        counts[c.rank().index()] += 1;
+        suit_masks[c.suit().index()] |= c.rank().bit();
     }
 
     // Flush / straight flush
@@ -245,9 +245,9 @@ mod tests {
     // Independent naive implementation: best of the 21 5-card combos,
     // each ranked with straightforward sort-and-count logic.
     fn naive5(cards: &[Card; 5]) -> u64 {
-        let mut ranks: Vec<u8> = cards.iter().map(|&c| rank(c)).collect();
+        let mut ranks: Vec<u8> = cards.iter().map(|&c| c.rank().index() as u8).collect();
         ranks.sort_unstable_by(|a, b| b.cmp(a));
-        let flush = cards.iter().all(|&c| suit(c) == suit(cards[0]));
+        let flush = cards.iter().all(|&c| c.suit() == cards[0].suit());
 
         // count multiplicities
         let mut counts: Vec<(u8, u8)> = Vec::new(); // (count, rank), sorted desc

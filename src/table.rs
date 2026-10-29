@@ -8,7 +8,7 @@
 
 use crate::abstraction::{AbsAction, Abstraction, TOKEN_STREET_SEP};
 use crate::bot::Policy;
-use crate::cards::fresh_deck;
+use crate::cards::{fresh_deck, Card, Rank};
 use crate::engine::{Hand, HandConfig, PlayerAction};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -38,7 +38,7 @@ pub struct RoundRoot {
 }
 
 impl Table {
-    pub fn new(cfg: &HandConfig, button: usize, deck: [u8; 52]) -> Table {
+    pub fn new(cfg: &HandConfig, button: usize, deck: [Card; 52]) -> Table {
         let real = Hand::new(cfg, button, deck);
         Table {
             shadow: real.clone(),
@@ -193,11 +193,11 @@ const PUSH_FOLD_RANGE: &[&str] = &["22+", "A2s+", "A8o+", "K9s+", "KTo+", "QTs+"
 const NIT_RANGE: &[&str] = &["88+", "AJs+", "KQs", "AQo+"];
 
 /// Whether `hole` is in a range written like "22+", "A2s+", "KQo".
-fn in_range(hole: [crate::cards::Card; 2], range: &[&str]) -> bool {
-    let r = |ch: u8| b"23456789TJQKA".iter().position(|&c| c == ch).expect("a rank") as u8;
-    let (a, b) = (crate::cards::rank(hole[0]), crate::cards::rank(hole[1]));
+fn in_range(hole: [Card; 2], range: &[&str]) -> bool {
+    let r = |ch: u8| Rank::from_char(ch as char).expect("a rank");
+    let (a, b) = (hole[0].rank(), hole[1].rank());
     let (hi, lo) = (a.max(b), a.min(b));
-    let suited = (hole[0] & 3) == (hole[1] & 3);
+    let suited = hole[0].suit() == hole[1].suit();
     range.iter().any(|spec| {
         let s = spec.as_bytes();
         let (h, l, plus) = (r(s[0]), r(s[1]), spec.ends_with('+'));
@@ -264,7 +264,7 @@ fn play_one(
     policy: &Policy,
     cfg: &HandConfig,
     baseline: Baseline,
-    deck: [u8; 52],
+    deck: [Card; 52],
     button: usize,
     hero: usize,
     rng: &mut SmallRng,
@@ -474,7 +474,7 @@ pub fn run_eval_paired_policies(
         ..crate::cfr::TrainConfig::default()
     };
 
-    let play_variant = |deck: [u8; 52],
+    let play_variant = |deck: [Card; 52],
                         button: usize,
                         hero: usize,
                         i: u64,

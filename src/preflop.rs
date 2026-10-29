@@ -16,7 +16,7 @@
 //! raise to BET_SIZES[N] of the pot, `a` all-in.
 
 use crate::abstraction::{AbsAction, Abstraction, TOKEN_STREET_SEP, BET_SIZES};
-use crate::cards::{fresh_deck, make_card, Card, RANK_CHARS};
+use crate::cards::{fresh_deck, Card, Rank, Suit};
 use crate::cfr::sample_index;
 use crate::engine::{Hand, HandConfig, Street};
 use crate::mirror::Bot;
@@ -94,8 +94,8 @@ pub fn node(cfg: &HandConfig, abs: &Abstraction, line: &str, deck: [Card; 52]) -
 
 /// The 169 hand classes in preflop_bucket order are not contiguous by
 /// name, so classes are named from a representative combo.
-pub fn class_name(hi: u8, lo: u8, suited: bool) -> String {
-    let (h, l) = (RANK_CHARS[hi as usize], RANK_CHARS[lo as usize]);
+pub fn class_name(hi: Rank, lo: Rank, suited: bool) -> String {
+    let (h, l) = (hi.to_char(), lo.to_char());
     if hi == lo {
         format!("{h}{l}")
     } else {
@@ -106,7 +106,7 @@ pub fn class_name(hi: u8, lo: u8, suited: bool) -> String {
 /// Every combo of a class like "KK", "AKs" or "AKo".
 pub fn class_combos(name: &str) -> Result<Vec<[Card; 2]>, String> {
     let chars: Vec<char> = name.chars().collect();
-    let r = |c: char| RANK_CHARS.iter().position(|&x| x == c.to_ascii_uppercase()).map(|r| r as u8);
+    let r = Rank::from_char;
     let bad = || format!("bad hand class '{name}' (e.g. KK, AKs, AKo)");
     let (a, b) = match (chars.first().and_then(|&c| r(c)), chars.get(1).and_then(|&c| r(c))) {
         (Some(a), Some(b)) => (a.max(b), a.min(b)),
@@ -114,8 +114,8 @@ pub fn class_combos(name: &str) -> Result<Vec<[Card; 2]>, String> {
     };
     let kind = chars.get(2).copied();
     let mut out = Vec::new();
-    for s1 in 0..4u8 {
-        for s2 in 0..4u8 {
+    for s1 in Suit::ALL {
+        for s2 in Suit::ALL {
             let ok = match (a == b, kind) {
                 (true, None) => s1 < s2,
                 (false, Some('s')) => s1 == s2,
@@ -123,7 +123,7 @@ pub fn class_combos(name: &str) -> Result<Vec<[Card; 2]>, String> {
                 _ => return Err(bad()),
             };
             if ok {
-                out.push([make_card(a, s1), make_card(b, s2)]);
+                out.push([Card::new(a, s1), Card::new(b, s2)]);
             }
         }
     }
@@ -133,11 +133,11 @@ pub fn class_combos(name: &str) -> Result<Vec<[Card; 2]>, String> {
 /// Every class name, strongest-looking first (pairs, then by ranks).
 pub fn all_classes() -> Vec<String> {
     let mut out = Vec::new();
-    for hi in (0..13u8).rev() {
+    for hi in Rank::ALL.into_iter().rev() {
         out.push(class_name(hi, hi, false));
     }
-    for hi in (0..13u8).rev() {
-        for lo in (0..hi).rev() {
+    for (h, &hi) in Rank::ALL.iter().enumerate().rev() {
+        for &lo in Rank::ALL[..h].iter().rev() {
             out.push(class_name(hi, lo, true));
             out.push(class_name(hi, lo, false));
         }

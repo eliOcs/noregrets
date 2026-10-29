@@ -67,9 +67,9 @@ impl SubgameBr<'_> {
         let board: Vec<Card> = h.board().to_vec();
         let mut on_board = [false; 52];
         for &c in &board {
-            on_board[c as usize] = true;
+            on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0] as usize] && !on_board[c[1] as usize];
+        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut rivers = Vec::new();
         let mut rank = Vec::new();
@@ -101,7 +101,7 @@ impl SubgameBr<'_> {
 
         if h.street() == Street::Turn {
             debug_assert_eq!(board.len(), 4);
-            rivers = (0..52u8).filter(|&c| !on_board[c as usize]).collect();
+            rivers = Card::ALL.into_iter().filter(|&c| !on_board[c.index()]).collect();
             for &r in &rivers {
                 let board5 = [board[0], board[1], board[2], board[3], r];
                 let (rk, st) = rank_table(&board5);
@@ -155,15 +155,15 @@ impl SubgameBr<'_> {
     pub fn action(&self, h: &Hand, hist: &[u8], hole: [Card; 2], bot_range: &[f64]) -> (AbsAction, f64) {
         let hero_ci = crate::search::combo_index(hole[0], hole[1]);
         let mut blocked = [false; 52];
-        blocked[hole[0] as usize] = true;
-        blocked[hole[1] as usize] = true;
+        blocked[hole[0].index()] = true;
+        blocked[hole[1].index()] = true;
         for &c in h.board() {
-            blocked[c as usize] = true;
+            blocked[c.index()] = true;
         }
         // The probe's own cards and the board are impossible bot holdings.
         let mut reach = bot_range.to_vec();
         for (ci, combo) in self.combos.iter().enumerate() {
-            if blocked[combo[0] as usize] || blocked[combo[1] as usize] {
+            if blocked[combo[0].index()] || blocked[combo[1].index()] {
                 reach[ci] = 0.0;
             }
         }
@@ -332,8 +332,8 @@ impl SubgameBr<'_> {
             let w = reach[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
 
@@ -341,7 +341,7 @@ impl SubgameBr<'_> {
             let util = h.utilities()[hero_seat] as f64;
             let mut vals = vec![0.0; NUM_COMBOS];
             for (ci, combo) in self.combos.iter().enumerate() {
-                let excl = total - card[combo[0] as usize] - card[combo[1] as usize] + reach[ci];
+                let excl = total - card[combo[0].index()] - card[combo[1].index()] + reach[ci];
                 if excl > 0.0 {
                     vals[ci] = util * excl;
                 }
@@ -376,8 +376,8 @@ impl SubgameBr<'_> {
                     for (ci, combo) in self.combos.iter().enumerate() {
                         if (combo[0] == r || combo[1] == r) && masked[ci] > 0.0 {
                             t2 -= masked[ci];
-                            c2[combo[0] as usize] -= masked[ci];
-                            c2[combo[1] as usize] -= masked[ci];
+                            c2[combo[0].index()] -= masked[ci];
+                            c2[combo[1].index()] -= masked[ci];
                             masked[ci] = 0.0;
                         }
                     }
@@ -578,11 +578,11 @@ mod tests {
         let mut used = [false; 52];
         for (i, &c) in front.iter().enumerate() {
             deck[i] = c;
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         let mut idx = front.len();
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
             }

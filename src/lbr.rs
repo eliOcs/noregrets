@@ -115,14 +115,14 @@ impl Lbr<'_> {
     /// (`runouts` completions), exact when the board is already complete.
     pub fn range_equity(&self, hole: [Card; 2], board: &[Card], weights: &[f64], rng: &mut SmallRng) -> f64 {
         let mut used = [false; 52];
-        used[hole[0] as usize] = true;
-        used[hole[1] as usize] = true;
+        used[hole[0].index()] = true;
+        used[hole[1].index()] = true;
         for &c in board {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
-        let mut stock: Vec<Card> = (0..52).filter(|&c| !used[c as usize]).collect();
+        let mut stock: Vec<Card> = Card::ALL.into_iter().filter(|&c| !used[c.index()]).collect();
         let need = 5 - board.len();
-        let mut full = [0u8; 5];
+        let mut full = [Card::FILL; 5];
         full[..board.len()].copy_from_slice(board);
         let iters = if need == 0 { 1 } else { self.runouts.max(1) };
 
@@ -134,16 +134,16 @@ impl Lbr<'_> {
                 let j = rng.random_range(k..stock.len());
                 stock.swap(k, j);
                 full[board.len() + k] = stock[k];
-                on_runout[stock[k] as usize] = true;
+                on_runout[stock[k].index()] = true;
             }
             let hero = eval_hole_board(&hole, &full);
             for (ci, combo) in self.combos.iter().enumerate() {
                 let w = weights[ci];
                 if w <= 0.0
-                    || used[combo[0] as usize]
-                    || used[combo[1] as usize]
-                    || on_runout[combo[0] as usize]
-                    || on_runout[combo[1] as usize]
+                    || used[combo[0].index()]
+                    || used[combo[1].index()]
+                    || on_runout[combo[0].index()]
+                    || on_runout[combo[1].index()]
                 {
                     continue;
                 }
@@ -336,14 +336,14 @@ impl Lbr<'_> {
         rng: &mut SmallRng,
     ) -> f64 {
         let mut used = [false; 52];
-        used[hole[0] as usize] = true;
-        used[hole[1] as usize] = true;
+        used[hole[0].index()] = true;
+        used[hole[1].index()] = true;
         for &c in board {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
-        let stock: Vec<Card> = (0..52).filter(|&c| !used[c as usize]).collect();
+        let stock: Vec<Card> = Card::ALL.into_iter().filter(|&c| !used[c.index()]).collect();
         let need = 5 - board.len();
-        let mut full = [0u8; 5];
+        let mut full = [Card::FILL; 5];
         full[..board.len()].copy_from_slice(board);
         let opps: Vec<&[f64]> = ranges.iter().flatten().copied().collect();
         if opps.is_empty() {
@@ -375,7 +375,7 @@ impl Lbr<'_> {
                 let j = rng.random_range(k..stock.len());
                 stock.swap(k, j);
                 full[board.len() + k] = stock[k];
-                taken[stock[k] as usize] = true;
+                taken[stock[k].index()] = true;
             }
             let hero = eval_hole_board(&hole, &full);
             let mut best_opp = 0u32;
@@ -387,14 +387,14 @@ impl Lbr<'_> {
                     let r = rng.random::<f64>() * cum.last().unwrap();
                     let ci = cum.partition_point(|&c| c < r).min(NUM_COMBOS - 1);
                     let c = self.combos[ci];
-                    if !taken[c[0] as usize] && !taken[c[1] as usize] {
+                    if !taken[c[0].index()] && !taken[c[1].index()] {
                         combo = Some(c);
                         break;
                     }
                 }
                 let Some(c) = combo else { continue 'outer };
-                taken[c[0] as usize] = true;
-                taken[c[1] as usize] = true;
+                taken[c[0].index()] = true;
+                taken[c[1].index()] = true;
                 let v = eval_hole_board(&c, &full);
                 if v > best_opp {
                     best_opp = v;
@@ -695,11 +695,11 @@ mod tests {
         let mut used = [false; 52];
         for (i, &c) in front.iter().enumerate() {
             deck[i] = c;
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         let mut idx = front.len();
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
             }
@@ -759,7 +759,7 @@ mod tests {
             rigged_deck("2c 7d"), // cards irrelevant: we observe seat 3
         );
         let acts = abs.abstract_actions(&h);
-        let aa = preflop_bucket([51, 50]);
+        let aa = preflop_bucket([Card::ALL[51], Card::ALL[50]]);
         let raise_idx = acts
             .iter()
             .position(|a| matches!(a, AbsAction::Bet(_)))

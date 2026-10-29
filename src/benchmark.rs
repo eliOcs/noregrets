@@ -170,13 +170,13 @@ pub fn replay_hand(
         }
     }
 
-    let mut deck = [0u8; 52];
+    let mut deck = [Card::FILL; 52];
     let mut used = [false; 52];
     let mut place = |pos: usize, c: Card, used: &mut [bool; 52]| -> bool {
-        if used[c as usize] {
+        if used[c.index()] {
             return false;
         }
-        used[c as usize] = true;
+        used[c.index()] = true;
         deck[pos] = c;
         true
     };
@@ -193,7 +193,7 @@ pub fn replay_hand(
         }
     }
     // Fill unknown holes and the rest of the deck with unused cards.
-    let mut filler = (0..52u8).filter(|&c| !used[c as usize]);
+    let mut filler = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
     for (p, h) in holes.iter().enumerate() {
         if h.is_none() {
             deck[2 * p] = filler.next().unwrap();

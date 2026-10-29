@@ -282,12 +282,12 @@ fn card(s: &str) -> Result<Card, String> {
 fn deal(n: usize, seat: usize, hole: [Card; 2], board: &[Card]) -> Result<[Card; 52], String> {
     let mut used = [false; 52];
     for &c in hole.iter().chain(board) {
-        if std::mem::replace(&mut used[c as usize], true) {
+        if std::mem::replace(&mut used[c.index()], true) {
             return Err(format!("card {} appears twice", crate::cards::card_str(c)));
         }
     }
-    let mut unseen = (0..52u8).filter(|&c| !used[c as usize]);
-    let mut deck = [0u8; 52];
+    let mut unseen = Card::ALL.into_iter().filter(|&c| !used[c.index()]);
+    let mut deck = [Card::FILL; 52];
     for (i, slot) in deck.iter_mut().enumerate() {
         *slot = if i == 2 * seat {
             hole[0]

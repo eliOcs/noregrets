@@ -144,9 +144,9 @@ impl TurnSolver {
         debug_assert_eq!(board.len(), 4);
         let mut on_board = [false; 52];
         for &c in &board {
-            on_board[c as usize] = true;
+            on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0] as usize] && !on_board[c[1] as usize];
+        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut range = [vec![0.0; NUM_COMBOS], vec![0.0; NUM_COMBOS]];
         for (pi, r) in range.iter_mut().enumerate() {
@@ -165,7 +165,7 @@ impl TurnSolver {
             }
         }
 
-        let rivers: Vec<Card> = (0..52u8).filter(|&c| !on_board[c as usize]).collect();
+        let rivers: Vec<Card> = Card::ALL.into_iter().filter(|&c| !on_board[c.index()]).collect();
         let mut rank: Vec<Vec<u32>> = Vec::with_capacity(rivers.len());
         let mut sorted: Vec<Vec<u32>> = Vec::with_capacity(rivers.len());
         for &r in &rivers {
@@ -428,15 +428,15 @@ impl TurnSolver {
             let w = hero[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
         let compats: Vec<f64> = self
             .combos
             .iter()
             .enumerate()
-            .map(|(ci, c)| total - card[c[0] as usize] - card[c[1] as usize] + hero[ci])
+            .map(|(ci, c)| total - card[c[0].index()] - card[c[1].index()] + hero[ci])
             .collect();
         let g = self.gadget.as_mut().unwrap();
         for ci in 0..NUM_COMBOS {
@@ -499,8 +499,8 @@ impl TurnSolver {
             let w = opp[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
         (0..NUM_COMBOS)
@@ -509,7 +509,7 @@ impl TurnSolver {
                     return 0.0;
                 }
                 let c = self.combos[ci];
-                let compat = total - card[c[0] as usize] - card[c[1] as usize] + opp[ci];
+                let compat = total - card[c[0].index()] - card[c[1].index()] + opp[ci];
                 if compat <= 0.0 {
                     return 0.0;
                 }
@@ -529,11 +529,11 @@ impl TurnSolver {
                 let p = 1.0 / (self.rivers.len() as f64 - 4.0);
                 let mut vals = vec![0.0; NUM_COMBOS];
                 for ri in 0..self.chances[xi].kids.len() {
-                    let r = self.rivers[ri] as usize;
+                    let r = self.rivers[ri].index();
                     let mut own = reach_own.to_vec();
                     let mut opp = reach_opp.to_vec();
                     for (ci, combo) in self.combos.iter().enumerate() {
-                        if combo[0] as usize == r || combo[1] as usize == r {
+                        if combo[0].index() == r || combo[1].index() == r {
                             own[ci] = 0.0;
                             opp[ci] = 0.0;
                         }
@@ -551,25 +551,25 @@ impl TurnSolver {
                             let w = opp[ci];
                             if w > 0.0 {
                                 total += w;
-                                card[combo[0] as usize] += w;
-                                card[combo[1] as usize] += w;
+                                card[combo[0].index()] += w;
+                                card[combo[1].index()] += w;
                             }
                         }
                         let ch = &mut self.chances[xi];
                         for (ci, combo) in self.combos.iter().enumerate() {
-                            if combo[0] as usize == r || combo[1] as usize == r {
+                            if combo[0].index() == r || combo[1].index() == r {
                                 continue;
                             }
                             let compat = total
-                                - card[combo[0] as usize]
-                                - card[combo[1] as usize]
+                                - card[combo[0].index()]
+                                - card[combo[1].index()]
                                 + opp[ci];
                             ch.cfv[ri * NUM_COMBOS + ci] += t * v[ci];
                             ch.mass[ri * NUM_COMBOS + ci] += t * compat;
                         }
                     }
                     for (ci, combo) in self.combos.iter().enumerate() {
-                        if combo[0] as usize != r && combo[1] as usize != r {
+                        if combo[0].index() != r && combo[1].index() != r {
                             vals[ci] += p * v[ci];
                         }
                     }
@@ -653,8 +653,8 @@ impl TurnSolver {
             let w = reach_opp[ci];
             if w > 0.0 {
                 total += w;
-                card[combo[0] as usize] += w;
-                card[combo[1] as usize] += w;
+                card[combo[0].index()] += w;
+                card[combo[1].index()] += w;
             }
         }
         match &self.terminals[ti] {
@@ -662,7 +662,7 @@ impl TurnSolver {
                 let mut vals = vec![0.0; NUM_COMBOS];
                 for (ci, combo) in self.combos.iter().enumerate() {
                     let excl =
-                        total - card[combo[0] as usize] - card[combo[1] as usize] + reach_opp[ci];
+                        total - card[combo[0].index()] - card[combo[1].index()] + reach_opp[ci];
                     if excl != 0.0 {
                         vals[ci] = util[u] * excl;
                     }
@@ -725,11 +725,11 @@ mod tests {
         let mut used = [false; 52];
         for (i, &c) in front.iter().enumerate() {
             deck[i] = c;
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         let mut idx = front.len();
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
             }

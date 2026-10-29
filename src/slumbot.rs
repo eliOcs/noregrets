@@ -281,13 +281,13 @@ impl HandState {
         let mut deck = crate::cards::fresh_deck();
         let mut used = [false; 52];
         for &c in &holes {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         deck[0] = holes[0];
         deck[1] = holes[1];
         let mut idx = 2;
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
                 if idx == 52 {

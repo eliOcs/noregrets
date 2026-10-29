@@ -525,7 +525,7 @@ infoset counts overall and per street.
 
 ```
 src/
-├── cards.rs        Card representation (u8, rank*4+suit), parsing, decks
+├── cards.rs        Card, Rank, Suit newtypes (one byte, rank*4+suit), parsing, decks
 ├── eval.rs         Fast 7-card evaluator (bitmask-based, ~10ns/hand),
 │                   differentially tested against a naive best-of-21 evaluator
 ├── engine.rs       NLHE state machine: blinds, min-raise rules, big-blind

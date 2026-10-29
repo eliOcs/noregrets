@@ -69,15 +69,15 @@ fn equity_vs_actual(h: &Hand, hero: usize, runouts: u32, rng: &mut SmallRng) -> 
     let mut used = [false; 52];
     for p in 0..h.num_players() {
         for c in h.hole(p) {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
     }
     for &c in board {
-        used[c as usize] = true;
+        used[c.index()] = true;
     }
-    let mut stock: Vec<Card> = (0..52).filter(|&c| !used[c as usize]).collect();
+    let mut stock: Vec<Card> = Card::ALL.into_iter().filter(|&c| !used[c.index()]).collect();
     let need = 5 - board.len();
-    let mut full = [0u8; 5];
+    let mut full = [Card::FILL; 5];
     full[..board.len()].copy_from_slice(board);
     let iters = if need == 0 { 1 } else { runouts.max(1) };
 
@@ -124,13 +124,13 @@ fn unseen(h: &Hand) -> Vec<Card> {
     let mut used = [false; 52];
     for p in 0..h.num_players() {
         for c in h.hole(p) {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
     }
     for &c in h.board() {
-        used[c as usize] = true;
+        used[c.index()] = true;
     }
-    (0..52).filter(|&c| !used[c as usize]).collect()
+    Card::ALL.into_iter().filter(|&c| !used[c.index()]).collect()
 }
 
 struct AivatCfg {
@@ -163,11 +163,11 @@ fn play_one_aivat(
         for p in 0..n {
             if p != hero {
                 for c in table.real.hole(p) {
-                    allowed[c as usize] = false;
+                    allowed[c.index()] = false;
                 }
             }
         }
-        let pool: Vec<Card> = (0..52).filter(|&c| allowed[c as usize]).collect();
+        let pool: Vec<Card> = Card::ALL.into_iter().filter(|&c| allowed[c.index()]).collect();
         let mut sum = 0.0;
         for _ in 0..ac.alt_samples {
             let a = pool[rng.random_range(0..pool.len())];
@@ -345,11 +345,11 @@ mod tests {
         let mut used = [false; 52];
         for (i, &c) in front.iter().enumerate() {
             deck[i] = c;
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         let mut idx = front.len();
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
             }
@@ -387,8 +387,8 @@ mod tests {
         let mut seen = [false; 52];
         for p in 0..6 {
             for c in h.hole(p) {
-                assert!(!seen[c as usize], "duplicate card after swap");
-                seen[c as usize] = true;
+                assert!(!seen[c.index()], "duplicate card after swap");
+                seen[c.index()] = true;
             }
         }
     }

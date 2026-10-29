@@ -102,7 +102,7 @@ impl Hand {
         assert_eq!(stacks.len(), n);
         assert!(button < n);
 
-        let mut holes = [[0u8; 2]; MAX_PLAYERS];
+        let mut holes = [[Card::FILL; 2]; MAX_PLAYERS];
         for (p, hole) in holes.iter_mut().enumerate().take(n) {
             hole[0] = deck[2 * p];
             hole[1] = deck[2 * p + 1];
@@ -113,7 +113,7 @@ impl Hand {
             button,
             bb: cfg.bb,
             holes,
-            board: [0; 5],
+            board: [Card::FILL; 5],
             board_len: 0,
             deck,
             stacks: [0; MAX_PLAYERS],
@@ -267,13 +267,13 @@ impl Hand {
     pub fn resample_hidden(&mut self, keep: Option<usize>, rng: &mut SmallRng) {
         let mut used = [false; 52];
         for &c in self.board() {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         if let Some(p) = keep {
-            used[self.holes[p][0] as usize] = true;
-            used[self.holes[p][1] as usize] = true;
+            used[self.holes[p][0].index()] = true;
+            used[self.holes[p][1].index()] = true;
         }
-        let mut unseen: Vec<Card> = (0..52u8).filter(|&c| !used[c as usize]).collect();
+        let mut unseen: Vec<Card> = Card::ALL.into_iter().filter(|&c| !used[c.index()]).collect();
         // Partial Fisher-Yates over however many cards we need.
         let need = 2 * self.n + (5 - self.board_len);
         for k in 0..need.min(unseen.len()) {
@@ -305,15 +305,15 @@ impl Hand {
     ) {
         let mut used = [false; 52];
         for &c in self.board() {
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         for w in want.iter().take(self.n).flatten() {
             for &c in w {
-                debug_assert!(!used[c as usize], "requested card already in use");
-                used[c as usize] = true;
+                debug_assert!(!used[c.index()], "requested card already in use");
+                used[c.index()] = true;
             }
         }
-        let mut unseen: Vec<Card> = (0..52u8).filter(|&c| !used[c as usize]).collect();
+        let mut unseen: Vec<Card> = Card::ALL.into_iter().filter(|&c| !used[c.index()]).collect();
         let free_seats = (0..self.n).filter(|&p| want[p].is_none()).count();
         let need = 2 * free_seats + (5 - self.board_len);
         for k in 0..need.min(unseen.len()) {
@@ -539,15 +539,15 @@ mod tests {
     /// Deck whose first cards are exactly `front` (parsed), rest arbitrary.
     fn deck_with_front(front: &str) -> [Card; 52] {
         let front = parse_cards(front).unwrap();
-        let mut deck = [0u8; 52];
+        let mut deck = [Card::FILL; 52];
         let mut used = [false; 52];
         for (i, &c) in front.iter().enumerate() {
             deck[i] = c;
-            used[c as usize] = true;
+            used[c.index()] = true;
         }
         let mut idx = front.len();
-        for c in 0..52u8 {
-            if !used[c as usize] {
+        for c in Card::ALL {
+            if !used[c.index()] {
                 deck[idx] = c;
                 idx += 1;
             }
@@ -785,7 +785,8 @@ mod tests {
         let board_before: Vec<Card> = h.board().to_vec();
 
         // Pick two combos that don't collide with the board.
-        let free: Vec<Card> = (0..52u8)
+        let free: Vec<Card> = Card::ALL
+            .into_iter()
             .filter(|c| !board_before.contains(c))
             .collect();
         let (w1, w2) = ([free[0], free[1]], [free[2], free[3]]);

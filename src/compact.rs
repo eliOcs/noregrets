@@ -394,12 +394,13 @@ mod tests {
         // A deliberately wrong bucket shows the table, not Monte Carlo,
         // answered: hole 2c 3d, board 4h 7c 9h, and the same with clubs and
         // diamonds swapped.
-        let (hole, board) = ([0u8, 5], [10u8, 20, 30]);
-        let c = roundtrip_with(&blueprint(100, 7), "abs", Some(&table(vec![(canonical_cards_key(hole, &board), 11)])));
-        let abs = Abstraction::with_centroids(AbsConfig::default(), None).with_table(c.bucket_table().unwrap());
+        let c = |s: &str| crate::cards::parse_card(s).unwrap();
+        let (hole, board) = ([c("2c"), c("3d")], [c("4h"), c("7c"), c("9h")]);
+        let bp = roundtrip_with(&blueprint(100, 7), "abs", Some(&table(vec![(canonical_cards_key(hole, &board), 11)])));
+        let abs = Abstraction::with_centroids(AbsConfig::default(), None).with_table(bp.bucket_table().unwrap());
         let mut rng = SmallRng::seed_from_u64(8);
         assert_eq!(abs.bucket(hole, &board, &mut rng), 11);
-        assert_eq!(abs.bucket([1, 4], &[10, 21, 30], &mut rng), 11);
+        assert_eq!(abs.bucket([c("2d"), c("3c")], &[c("4h"), c("7d"), c("9h")], &mut rng), 11);
         assert_eq!(abs.canon_len(), 0, "table hits are not copied into the cache");
     }
 

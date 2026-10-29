@@ -65,15 +65,15 @@ fn replay_hand(v: &Value, abs: &Abstraction) -> Result<Vec<Decision>, String> {
     let mut deck = crate::cards::fresh_deck();
     let mut used = [false; 52];
     for &c in our.iter().chain(bot.iter()).chain(board.iter()) {
-        used[c as usize] = true;
+        used[c.index()] = true;
     }
     deck[0] = our[0];
     deck[1] = our[1];
     deck[2] = bot[0];
     deck[3] = bot[1];
     let mut idx = 4;
-    for c in 0..52u8 {
-        if !used[c as usize] {
+    for c in Card::ALL {
+        if !used[c.index()] {
             deck[idx] = c;
             idx += 1;
             if idx == 52 {
