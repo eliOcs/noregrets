@@ -74,15 +74,17 @@ pub fn node(cfg: &HandConfig, abs: &Abstraction, line: &str, deck: [Card; 52]) -
     let mut hist = Vec::new();
     let mut steps = Vec::new();
     for tok in line.split_whitespace() {
-        if h.is_terminal() || h.street() != Street::Preflop {
-            return Err(format!("the line leaves preflop before '{tok}'"));
+        let leaves = || format!("the line leaves preflop before '{tok}'");
+        let seat = h.to_act().ok_or_else(leaves)?;
+        if h.street() != Street::Preflop {
+            return Err(leaves());
         }
         let a = parse_action(tok)?;
         let acts = abs.abstract_actions(&h);
         if !acts.contains(&a) {
-            return Err(format!("'{tok}' is not on the menu for {}", SEATS[h.to_act()]));
+            return Err(format!("'{tok}' is not on the menu for {}", SEATS[seat]));
         }
-        steps.push((h.to_act(), a));
+        steps.push((seat, a));
         h.apply(abs.concrete(&h, a));
         hist.push(a.token());
     }
@@ -149,7 +151,7 @@ pub fn all_classes() -> Vec<String> {
 /// check/call when the infoset is unseen or its menu differs (as served).
 pub fn dist(bot: &Bot, h: &Hand, hist: &[u8], rng: &mut SmallRng) -> (Vec<AbsAction>, Vec<f64>, bool) {
     let acts = bot.abs.abstract_actions(h);
-    let bucket = bot.abs.bucket(h.hole(h.to_act()), h.board(), rng);
+    let bucket = bot.abs.bucket(h.hole(h.to_act().expect("a live decision")), h.board(), rng);
     if let Some(s) = bot.strategies.get(bucket, hist) {
         let total: f32 = s.iter().sum();
         if s.len() == acts.len() && total > 0.0 {
@@ -177,7 +179,7 @@ pub struct Probe {
 
 pub fn probe(bot: &Bot, cfg: &HandConfig, line: &str) -> Result<Probe, String> {
     let n0 = node(cfg, &bot.abs, line, fresh_deck())?;
-    let hero = n0.hand.to_act();
+    let hero = n0.hand.to_act().expect("node ends at a decision");
     let acts = bot.abs.abstract_actions(&n0.hand);
     let all_in_at = acts.iter().position(|&a| a == AbsAction::AllIn);
     let mut rng = SmallRng::seed_from_u64(0);
@@ -273,7 +275,7 @@ fn playout(bot: &Bot, mut h: Hand, mut hist: Vec<u8>, hero: usize, rng: &mut Sma
 pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u64, seed: u64) -> Result<ActionEv, String> {
     let combos = class_combos(class)?;
     let n0 = node(cfg, &bot.abs, line, fresh_deck())?;
-    let hero = n0.hand.to_act();
+    let hero = n0.hand.to_act().expect("node ends at a decision");
     let acts = bot.abs.abstract_actions(&n0.hand);
     let k = acts.len();
     let bb = cfg.bb as f64;
@@ -380,7 +382,7 @@ mod tests {
     fn button_open_reaches_the_big_blind() {
         let abs = Abstraction::new(AbsConfig::default());
         let n = node(&HandConfig::default(), &abs, "f f f r3 f", fresh_deck()).unwrap();
-        assert_eq!(SEATS[n.hand.to_act()], "BB");
+        assert_eq!(SEATS[n.hand.to_act().unwrap()], "BB");
         let names: Vec<String> = abs
             .abstract_actions(&n.hand)
             .iter()

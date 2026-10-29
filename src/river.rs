@@ -80,10 +80,10 @@ impl RiverSolver {
     /// live players, `h.to_act()` becomes solver player 0). `ranges` are the
     /// tracked weights (indexed by `combo_index`) for [to_act, other].
     pub fn build(h: &Hand, abs: &Abstraction, ranges: [&[f64]; 2]) -> Option<RiverSolver> {
-        if h.board().len() != 5 || h.is_terminal() || h.live_count() != 2 {
+        if h.board().len() != 5 || h.live_count() != 2 {
             return None;
         }
-        let hero = h.to_act();
+        let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let seats = [hero, villain];
 
@@ -175,7 +175,7 @@ impl RiverSolver {
             self.terminals.push(t);
             return Kid::End(self.terminals.len() - 1);
         }
-        let seat = h.to_act();
+        let seat = h.to_act().expect("terminal nodes return above");
         let player = if seat == seats[0] { 0 } else { 1 };
         debug_assert!(seat == seats[player]);
         let acts = abs.abstract_actions(&h);
@@ -764,7 +764,7 @@ mod tests {
             h.apply(PlayerAction::CheckCall); // p0 checks behind
         }
         assert_eq!(h.street(), crate::engine::Street::River);
-        assert_eq!(h.to_act(), 1);
+        assert_eq!(h.to_act(), Some(1));
         (h, abs_small())
     }
 
@@ -772,7 +772,7 @@ mod tests {
     fn river_checked_to_p0() -> (Hand, Abstraction) {
         let (mut h, abs) = river_p1_to_act();
         h.apply(PlayerAction::CheckCall);
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         (h, abs)
     }
 
@@ -781,7 +781,7 @@ mod tests {
         let (mut h, abs) = river_p1_to_act();
         let (_, hi) = h.raise_bounds().unwrap();
         h.apply(PlayerAction::RaiseTo(hi));
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         (h, abs)
     }
 

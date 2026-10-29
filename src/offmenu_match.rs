@@ -90,10 +90,9 @@ fn play(
     let mut m = Mirror::new(cfg, button, deck, &stacks);
     let (mut bets, mut changed) = (0, 0);
     for _ in 0..500 {
-        if m.real.is_terminal() {
+        let Some(to_act) = m.real.to_act() else {
             return (m.real.utilities()[hero], bets, changed);
-        }
-        let to_act = m.real.to_act();
+        };
         let choices = m.strategy(bot).0;
         let probs: Vec<f64> = choices.iter().map(|c| c.1).collect();
         let mut a: PlayerAction = choices[sample_index(&probs, &mut rng)].0;

@@ -141,13 +141,13 @@ impl Mirror {
     /// Bring the shadow to the real hand's player to act. False when that
     /// player is capped and can only check/call.
     pub fn sync(&mut self, abs: &Abstraction) -> bool {
-        let p = self.real.to_act();
+        let p = self.real.to_act().expect("the real hand is live");
         self.sync_to(p, abs)
     }
 
     /// Apply the real hand's next action; the shadow follows on-tree.
     pub fn apply(&mut self, a: PlayerAction, abs: &Abstraction) {
-        let p = self.real.to_act();
+        let p = self.real.to_act().expect("the real hand is live");
         if self.sync_to(p, abs) {
             let mapped = match a {
                 PlayerAction::Fold if self.shadow.can_check() => AbsAction::CheckCall,
@@ -172,7 +172,7 @@ impl Mirror {
     /// The strategy for the player to act on the real hand, as concrete
     /// actions with probabilities (duplicates merged).
     pub fn strategy(&mut self, bot: &Bot) -> (Vec<(PlayerAction, f64)>, Source) {
-        let p = self.real.to_act();
+        let p = self.real.to_act().expect("the real hand is live");
         if !self.sync_to(p, &bot.abs) {
             return (vec![(PlayerAction::CheckCall, 1.0)], Source::Capped);
         }
@@ -237,10 +237,10 @@ impl Mirror {
         // turns than this.
         for _ in 0..64 {
             let s = &self.shadow;
-            if s.is_terminal() || s.street() > self.real.street() {
+            let Some(q) = s.to_act() else { return false };
+            if s.street() > self.real.street() {
                 return false;
             }
-            let q = s.to_act();
             if q == p && s.street() == self.real.street() {
                 return true;
             }
@@ -270,7 +270,7 @@ impl Mirror {
     fn shadow_apply(&mut self, a: AbsAction, abs: &Abstraction) {
         if let Some(log) = &mut self.log {
             log.push(Observed {
-                seat: self.shadow.to_act(),
+                seat: self.shadow.to_act().expect("the shadow acts only while live"),
                 action: a,
                 shadow: self.shadow.clone(),
                 hist: self.hist.clone(),

@@ -53,13 +53,13 @@ impl SubgameBr<'_> {
     /// Build from a decision point `h` (turn or river, exactly two live
     /// players, probe to act).
     pub fn build<'a>(policy: &'a Policy, h: &Hand, bot_seat: usize) -> Option<SubgameBr<'a>> {
-        if h.is_terminal() || h.live_count() != 2 {
+        let hero_seat = h.to_act()?;
+        if h.live_count() != 2 {
             return None;
         }
         if h.street() != Street::Turn && h.street() != Street::River {
             return None;
         }
-        let hero_seat = h.to_act();
         if hero_seat == bot_seat {
             return None;
         }
@@ -231,7 +231,7 @@ impl SubgameBr<'_> {
         }
 
         let acts = self.policy.abs.abstract_actions(h);
-        let hero_to_act = h.to_act() != self.bot_seat;
+        let hero_to_act = h.to_act() != Some(self.bot_seat);
         let mut children: Vec<(Hand, Vec<u8>)> = Vec::with_capacity(acts.len());
         for &a in &acts {
             let mut child = h.clone();
@@ -453,10 +453,9 @@ pub fn run_br(
             let mut session = crate::bot::SearchSession::new();
 
             let mut guard = 0;
-            while !table.real.is_terminal() {
+            while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 200, "BR probe hand did not terminate");
-                let p = table.real.to_act();
                 let street_before = table.real.street();
                 if p == bot_seat {
                     let acts = policy.abs.abstract_actions(&table.shadow);
@@ -602,7 +601,7 @@ mod tests {
         }
         assert_eq!(t.real.street(), Street::River);
         t.apply_abs(AbsAction::AllIn, &policy.abs);
-        assert_eq!(t.real.to_act(), 0);
+        assert_eq!(t.real.to_act(), Some(0));
         t
     }
 
@@ -619,9 +618,9 @@ mod tests {
             t.apply_abs(AbsAction::CheckCall, &policy.abs);
         }
         assert_eq!(t.real.street(), Street::Turn);
-        assert_eq!(t.real.to_act(), 1);
+        assert_eq!(t.real.to_act(), Some(1));
         t.apply_abs(AbsAction::AllIn, &policy.abs);
-        assert_eq!(t.real.to_act(), 0);
+        assert_eq!(t.real.to_act(), Some(0));
         t
     }
 
@@ -685,7 +684,7 @@ mod tests {
             t.apply_abs(AbsAction::CheckCall, &policy.abs);
         }
         assert_eq!(t.real.street(), Street::Turn);
-        assert_eq!(t.real.to_act(), 1);
+        assert_eq!(t.real.to_act(), Some(1));
         // p1 holds the made royal vs a calling station: value-betting must
         // beat checking (the station calls everything, so bets are pure
         // value).

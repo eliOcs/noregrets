@@ -224,7 +224,7 @@ pub fn strategic_fingerprint(
         _ => vec![1.0 / acts.len() as f32; acts.len()],
     };
 
-    let hero = h0.to_act();
+    let hero = h0.to_act().expect("the standard state is a live decision");
     let mut vals = Vec::with_capacity(sc.rollouts as usize);
     let mut wins = 0u32;
     for _ in 0..sc.rollouts {
@@ -235,10 +235,10 @@ pub fn strategic_fingerprint(
         sim.resample_hidden_with(&want, rng);
         let mut hist2 = hist.clone();
         let mut guard = 0;
-        while !sim.is_terminal() && guard < 60 {
+        while let Some(p) = sim.to_act().filter(|_| guard < 60) {
             guard += 1;
             let p_acts = sc.abs.abstract_actions(&sim);
-            let b = sc.abs.bucket(sim.hole(sim.to_act()), sim.board(), rng);
+            let b = sc.abs.bucket(sim.hole(p), sim.board(), rng);
             let a = match sc.bp.get(b, &hist2) {
                 Some(s) if s.len() == p_acts.len() && s.iter().sum::<f32>() > 0.0 => {
                     let probs: Vec<f64> = s.iter().map(|&x| x as f64).collect();

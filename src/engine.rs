@@ -145,11 +145,11 @@ pub struct Hand {
     hand_commit: [u32; MAX_PLAYERS],
     seats: [Seat; MAX_PLAYERS],
     street: Street,
-    to_act: usize,
+    /// The seat whose turn it is; None once the hand is over.
+    to_act: Option<usize>,
     current_bet: u32,
     min_raise_inc: u32,
     n_raises: u8,
-    terminal: bool,
 }
 
 impl Hand {
@@ -190,11 +190,10 @@ impl Hand {
             hand_commit: [0; MAX_PLAYERS],
             seats: [Seat::Active { acted: false }; MAX_PLAYERS],
             street: Street::Preflop,
-            to_act: 0,
+            to_act: None,
             current_bet: 0,
             min_raise_inc: cfg.bb,
             n_raises: 0,
-            terminal: false,
         };
         h.stacks[..n].copy_from_slice(stacks);
 
@@ -208,16 +207,15 @@ impl Hand {
         h.commit(bb_seat, cfg.bb.min(h.stacks[bb_seat]));
         h.current_bet = h.street_commit[..n].iter().copied().max().unwrap();
 
-        match h.next_actor(bb_seat) {
-            Some(p) => h.to_act = p,
-            None => h.fast_forward_to_showdown(),
+        h.to_act = h.next_actor(bb_seat);
+        if h.to_act.is_none() {
+            h.fast_forward_to_showdown();
         }
         h
     }
 
     pub fn apply(&mut self, a: PlayerAction) {
-        debug_assert!(!self.terminal, "apply on terminal hand");
-        let p = self.to_act;
+        let p = self.actor();
         debug_assert!(self.seats[p].can_act());
 
         match a {
@@ -267,7 +265,7 @@ impl Hand {
 
     /// Net chip result per seat. Only valid when terminal.
     pub fn utilities(&self) -> [i64; MAX_PLAYERS] {
-        debug_assert!(self.terminal);
+        debug_assert!(self.is_terminal());
         let mut winnings = [0u64; MAX_PLAYERS];
 
         let live: Vec<usize> = (0..self.n).filter(|&p| !self.folded(p)).collect();
@@ -456,18 +454,19 @@ impl Hand {
 
     fn advance(&mut self, just_acted: usize) {
         if self.live_count() == 1 {
-            self.terminal = true;
+            self.to_act = None;
             return;
         }
         if !self.street_over() {
-            self.to_act = self
-                .next_actor(just_acted)
-                .expect("street not over but nobody to act");
+            self.to_act = Some(
+                self.next_actor(just_acted)
+                    .expect("street not over but nobody to act"),
+            );
             return;
         }
         match self.street.next() {
             Some(street) => self.begin_street(street),
-            None => self.terminal = true,
+            None => self.to_act = None,
         }
     }
 
@@ -493,9 +492,10 @@ impl Hand {
             return;
         }
         // First to act: left of the button (heads-up this is the non-button).
-        self.to_act = self
-            .next_actor(self.button)
-            .expect("betting street with nobody to act");
+        self.to_act = Some(
+            self.next_actor(self.button)
+                .expect("betting street with nobody to act"),
+        );
     }
 
     fn deal_board_for_street(&mut self) {
@@ -515,7 +515,13 @@ impl Hand {
     fn fast_forward_to_showdown(&mut self) {
         self.street = Street::River;
         self.deal_board_for_street();
-        self.terminal = true;
+        self.to_act = None;
+    }
+
+    /// The seat to act, for the methods that only make sense mid-hand.
+    #[track_caller]
+    fn actor(&self) -> usize {
+        self.to_act.expect("no one acts in a finished hand")
     }
 
     // --- accessors -------------------------------------------------------
@@ -523,7 +529,8 @@ impl Hand {
     pub fn num_players(&self) -> usize {
         self.n
     }
-    pub fn to_act(&self) -> usize {
+    /// The seat whose turn it is, or None once the hand is over.
+    pub fn to_act(&self) -> Option<usize> {
         self.to_act
     }
     pub fn street(&self) -> Street {
@@ -536,7 +543,7 @@ impl Hand {
         self.holes[p]
     }
     pub fn is_terminal(&self) -> bool {
-        self.terminal
+        self.to_act.is_none()
     }
     pub fn current_bet(&self) -> u32 {
         self.current_bet
@@ -570,7 +577,7 @@ impl Hand {
 
     /// Amount the player to act must add to call.
     pub fn to_call(&self) -> u32 {
-        self.current_bet - self.street_commit[self.to_act]
+        self.current_bet - self.street_commit[self.actor()]
     }
 
     pub fn can_check(&self) -> bool {
@@ -584,7 +591,7 @@ impl Hand {
     /// Legal (min_raise_to, max_raise_to) for the player to act, or None if
     /// raising is impossible (calling would already be all-in or match exactly).
     pub fn raise_bounds(&self) -> Option<(u32, u32)> {
-        let p = self.to_act;
+        let p = self.actor();
         let max_to = self.street_commit[p] + self.stacks[p];
         if max_to <= self.current_bet {
             return None;
@@ -645,7 +652,7 @@ mod tests {
     #[test]
     fn blinds_posted_and_utg_first() {
         let h = Hand::new(&cfg(6), 0, fresh_deck());
-        assert_eq!(h.to_act(), 3); // UTG
+        assert_eq!(h.to_act(), Some(3)); // UTG
         assert_eq!(h.pot(), 150);
         assert_eq!(h.current_bet(), 100);
         assert_eq!(h.stack(1), 9_950);
@@ -676,12 +683,12 @@ mod tests {
         }
         h.apply(CheckCall); // SB completes
         assert!(!h.is_terminal(), "BB must get the option");
-        assert_eq!(h.to_act(), 2);
+        assert_eq!(h.to_act(), Some(2));
         assert!(h.can_check());
         h.apply(CheckCall); // BB checks
         assert_eq!(h.street(), Street::Flop);
         assert_eq!(h.board().len(), 3);
-        assert_eq!(h.to_act(), 1); // SB first postflop
+        assert_eq!(h.to_act(), Some(1)); // SB first postflop
         assert_eq!(h.current_bet(), 0);
     }
 
@@ -689,13 +696,13 @@ mod tests {
     fn heads_up_blind_order() {
         let mut h = Hand::new(&cfg(2), 0, fresh_deck());
         // Button posts SB and acts first preflop.
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         assert_eq!(h.to_call(), 50);
         h.apply(CheckCall);
-        assert_eq!(h.to_act(), 1); // BB option
+        assert_eq!(h.to_act(), Some(1)); // BB option
         h.apply(CheckCall);
         assert_eq!(h.street(), Street::Flop);
-        assert_eq!(h.to_act(), 1); // non-button first postflop
+        assert_eq!(h.to_act(), Some(1)); // non-button first postflop
     }
 
     #[test]
@@ -764,7 +771,7 @@ mod tests {
         // p0 short with the best hand, p1 second best, p2 worst.
         let deck = deck_with_front("As Ah Ks Kh 2c 7d 3c 9d Jh 4s 8c");
         let mut h = Hand::new_with_stacks(&cfg(3), 0, deck, &[1_000, 5_000, 5_000]);
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         h.apply(RaiseTo(1_000)); // short stack all-in
         h.apply(RaiseTo(5_000)); // SB shoves over
         h.apply(CheckCall); // BB calls all-in
@@ -803,7 +810,7 @@ mod tests {
         assert_eq!(h.raise_bounds(), Some((250, 250))); // BB can only shove short
         h.apply(RaiseTo(250)); // short all-in raise
         assert!(!h.is_terminal(), "p0 must get to call the extra 50");
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         assert_eq!(h.to_call(), 50);
         h.apply(CheckCall);
         assert!(h.is_terminal()); // runout: p2's aces win

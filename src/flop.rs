@@ -148,10 +148,10 @@ impl<'a> FlopSolver<'a> {
         refresh: u64,
         max_query_turns: usize,
     ) -> Option<FlopSolver<'a>> {
-        if h.street() != Street::Flop || h.is_terminal() || h.live_count() != 2 {
+        if h.street() != Street::Flop || h.live_count() != 2 {
             return None;
         }
-        let hero = h.to_act();
+        let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let seats = [hero, villain];
 
@@ -247,7 +247,7 @@ impl<'a> FlopSolver<'a> {
 
         if h.street() == Street::Turn {
             // Flop betting closed: depth-limit leaf (turn street start).
-            let first = h.to_act();
+            let first = h.to_act().expect("terminal nodes return above");
             let other = (0..h.num_players())
                 .find(|&p| p != first && !h.folded(p))
                 .expect("two live players");
@@ -265,7 +265,7 @@ impl<'a> FlopSolver<'a> {
             return Kid::Leaf(self.leaves.len() - 1);
         }
 
-        let seat = h.to_act();
+        let seat = h.to_act().expect("terminal nodes return above");
         let player = if seat == seats[0] { 0 } else { 1 };
         let acts: Vec<AbsAction> = abs
             .abstract_actions(&h)
@@ -815,7 +815,7 @@ mod tests {
         h.apply(PlayerAction::CheckCall); // p0 limps
         h.apply(PlayerAction::CheckCall); // p1 checks -> flop
         assert_eq!(h.street(), Street::Flop);
-        assert_eq!(h.to_act(), 1);
+        assert_eq!(h.to_act(), Some(1));
         (h, abs_small())
     }
 
@@ -882,7 +882,7 @@ mod tests {
         let (mut h, abs) = flop_p1_to_act();
         let (_, hi) = h.raise_bounds().unwrap();
         h.apply(PlayerAction::RaiseTo(hi)); // p1 open-shoves the flop
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         let uni = vec![1.0; NUM_COMBOS];
         let oracle = EquityOracle;
         let mut s = FlopSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75], &oracle, 10).unwrap();

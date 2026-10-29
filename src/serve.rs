@@ -367,11 +367,11 @@ fn replay(bot: &Bot, cfg: &HandConfig, spot: &Spot, log: bool) -> Result<Mirror,
     }
 
     let real = &mirror.real;
-    if real.is_terminal() {
+    let Some(actor) = real.to_act() else {
         return Err("the hand is over".into());
-    }
-    if real.to_act() != spot.seat {
-        return Err(format!("seat {} is to act, not seat {}", real.to_act(), spot.seat));
+    };
+    if actor != spot.seat {
+        return Err(format!("seat {actor} is to act, not seat {}", spot.seat));
     }
     if real.board().len() != spot.board.len() {
         return Err(format!(

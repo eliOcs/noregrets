@@ -93,7 +93,7 @@ fn play(
         if hm.real.is_terminal() {
             return (hm.real.utilities()[hero], counts);
         }
-        let choices = if hm.real.to_act() == hero {
+        let choices = if hm.real.to_act() == Some(hero) {
             let (c, s) = hm.strategy(hero_side.bot);
             counts.decisions += 1;
             counts.unseen += (s == Source::Unseen) as u64;

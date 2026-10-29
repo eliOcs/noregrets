@@ -132,10 +132,10 @@ impl TurnSolver {
         ranges: [&[f64]; 2],
         keep: &[BetSize],
     ) -> Option<TurnSolver> {
-        if h.street() != Street::Turn || h.is_terminal() || h.live_count() != 2 {
+        if h.street() != Street::Turn || h.live_count() != 2 {
             return None;
         }
-        let hero = h.to_act();
+        let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let seats = [hero, villain];
 
@@ -292,7 +292,7 @@ impl TurnSolver {
             return self.new_chance(kids, path);
         }
 
-        let seat = h.to_act();
+        let seat = h.to_act().expect("terminal nodes return above");
         let player = if seat == seats[0] { 0 } else { 1 };
         let acts = Self::menu(abs, &h, keep);
         let kids: Vec<Kid> = acts
@@ -739,7 +739,7 @@ mod tests {
         h.apply(PlayerAction::CheckCall); // p1 checks flop
         h.apply(PlayerAction::CheckCall); // p0 checks behind -> turn
         assert_eq!(h.street(), Street::Turn);
-        assert_eq!(h.to_act(), 1);
+        assert_eq!(h.to_act(), Some(1));
         (h, abs_small())
     }
 
@@ -748,7 +748,7 @@ mod tests {
         let (mut h, abs) = turn_p1_to_act();
         let (_, hi) = h.raise_bounds().unwrap();
         h.apply(PlayerAction::RaiseTo(hi));
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         (h, abs)
     }
 

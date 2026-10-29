@@ -241,7 +241,7 @@ pub fn replay_hand(
             }
             _ => continue, // sm (showdown) etc.
         };
-        if table.real.is_terminal() || table.real.to_act() != seat {
+        if table.real.to_act() != Some(seat) {
             return Err(ReplayError::Desync);
         }
 

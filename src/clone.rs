@@ -94,10 +94,9 @@ fn replay_hand(v: &Value, abs: &Abstraction) -> Result<Vec<Decision>, String> {
         if matches!(inc, SlumAct::StreetSep) {
             continue; // the engine advances streets itself
         }
-        if table.real.is_terminal() {
+        let Some(p) = table.real.to_act() else {
             return Err("action after terminal".into());
-        }
-        let p = table.real.to_act();
+        };
         let concrete = match inc {
             SlumAct::Check | SlumAct::Call => PlayerAction::CheckCall,
             SlumAct::Fold => PlayerAction::Fold,

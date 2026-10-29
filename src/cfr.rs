@@ -181,7 +181,7 @@ impl Spine {
             return None;
         }
         let (seat, act) = self.steps[k];
-        if h.to_act() != seat {
+        if h.to_act() != Some(seat) {
             return None;
         }
         let si = acts.iter().position(|a| a.token() == self.tokens[k])?;
@@ -346,8 +346,7 @@ impl Trainer {
         let mut h = h.clone();
         let mut hist = hist.to_vec();
         let mut probs: Vec<f64> = Vec::with_capacity(MAX_ACTS);
-        while !h.is_terminal() {
-            let p = h.to_act();
+        while let Some(p) = h.to_act() {
             let acts = self.abs.abstract_actions(&h);
             let bucket = self.abs.bucket(h.hole(p), h.board(), rng);
             probs.clear();
@@ -553,9 +552,9 @@ impl Trainer {
         model_opp: bool,
         rng: &mut SmallRng,
     ) -> f64 {
-        if h.is_terminal() {
+        let Some(p) = h.to_act() else {
             return h.utilities()[traverser] as f64;
-        }
+        };
         if let Some(frozen) = &self.frozen_postflop {
             if h.street() != Street::Preflop {
                 return self.frozen_rollout(frozen.as_ref(), h, hist, traverser, rng);
@@ -566,7 +565,6 @@ impl Trainer {
                 return self.leaf_value(h, hist, traverser, weight, lc, rng);
             }
         }
-        let p = h.to_act();
         let acts = self.abs.abstract_actions(h);
         let n = acts.len();
         debug_assert!(n <= MAX_ACTS);
@@ -682,7 +680,6 @@ impl Trainer {
             // blueprint opponent (rnr_opp) takes precedence over the baseline
             // model; both are fixed, not learned.
             let a = if let Some(opp) = &self.rnr_opp {
-                let p = h.to_act();
                 let bucket = self.abs.bucket(h.hole(p), h.board(), rng);
                 match opp.get(bucket, hist) {
                     Some(s) if s.len() == acts.len() && s.iter().sum::<f32>() > 0.0 => {
@@ -882,8 +879,7 @@ impl Trainer {
     ) -> f64 {
         let mut h = h.clone();
         let mut hist = hist.to_vec();
-        while !h.is_terminal() {
-            let p = h.to_act();
+        while let Some(p) = h.to_act() {
             let acts = lc.abs.abstract_actions(&h);
             let bucket = lc.abs.bucket(h.hole(p), h.board(), rng);
             let mut probs: Vec<f64> = match lc.strategies.get(bucket, &hist) {
@@ -949,7 +945,7 @@ impl Trainer {
         let k = acts.len();
         let mut sigma = [1.0 / k as f64; MAX_ACTS];
         let mut updated = 0;
-        if h.to_act() == p {
+        if h.to_act() == Some(p) {
             let key = make_key(b, hist);
             if let Some(mut node) = self.nodes.get_mut(&key) {
                 regret_matching_into(&node.regret, &mut sigma[..k]);
@@ -960,7 +956,7 @@ impl Trainer {
             }
         }
         for (i, &a) in acts.iter().enumerate() {
-            let r = if h.to_act() == p { reach * sigma[i] } else { reach };
+            let r = if h.to_act() == Some(p) { reach * sigma[i] } else { reach };
             if r <= 0.0 {
                 continue;
             }

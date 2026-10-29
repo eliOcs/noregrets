@@ -66,7 +66,7 @@ fn random_river_spot(rng: &mut SmallRng) -> Hand {
     }
     h.apply(PlayerAction::CheckCall); // p1 checks the river
     debug_assert_eq!(h.street(), crate::engine::Street::River);
-    debug_assert_eq!(h.to_act(), 0);
+    debug_assert_eq!(h.to_act(), Some(0));
     h
 }
 

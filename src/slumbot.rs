@@ -341,14 +341,12 @@ impl HandState {
         let (incrs, new_cursor) = parse_incr(action, self.cursor)?;
         self.cursor = new_cursor;
         for inc in incrs {
-            match inc {
-                SlumAct::StreetSep => continue, // engine advances itself
-                _ if self.table.real.is_terminal() => {
-                    return Err("action after terminal".into());
-                }
-                _ => {}
+            if inc == SlumAct::StreetSep {
+                continue; // engine advances itself
             }
-            let p = self.table.real.to_act();
+            let Some(p) = self.table.real.to_act() else {
+                return Err("action after terminal".into());
+            };
             let concrete = match inc {
                 SlumAct::Check | SlumAct::Call => PlayerAction::CheckCall,
                 SlumAct::Fold => PlayerAction::Fold,
@@ -488,7 +486,7 @@ pub fn run(
                 desyncs += 1;
                 continue 'hands;
             }
-            if st.table.real.is_terminal() || st.table.real.to_act() != st.our_seat {
+            if st.table.real.to_act() != Some(st.our_seat) {
                 // Server should have ended the hand or acted; ask again by
                 // desync-abort (no polling endpoint exists).
                 if cfg.verbose {

@@ -188,10 +188,9 @@ fn play_one_aivat(
     }
 
     let mut guard = 0;
-    while !table.real.is_terminal() {
+    while let Some(p) = table.real.to_act() {
         guard += 1;
         assert!(guard < 500, "aivat hand did not terminate");
-        let p = table.real.to_act();
         let board_before = table.real.board().len();
 
         // Known-distribution decision correction (hero / Random baseline).

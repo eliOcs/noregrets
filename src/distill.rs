@@ -85,10 +85,9 @@ pub fn collect(policy: &Policy, cfg: &HandConfig, dcfg: &DistillCfg) -> (Records
                 (0..n).map(|_| SearchSession::new()).collect();
             let mut count = 0u64;
             let mut guard = 0;
-            while !table.real.is_terminal() {
+            while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 500, "distill hand did not terminate");
-                let p = table.real.to_act();
                 let (acts, probs) = policy.search_dist(
                     &table.real,
                     &table.shadow,

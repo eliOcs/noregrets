@@ -75,7 +75,7 @@ impl Table {
         // Concrete amount computed from the real pot, so real bets stay
         // sensible even if the shadow has drifted.
         let real_act = Self::concrete_or_call(&self.real, a, abs);
-        let actor = self.real.to_act();
+        let actor = self.real.to_act().expect("an action needs a live hand");
         self.real.apply(real_act);
         self.push_token(a, self.shadow.street() != street_before);
         self.resync_if_diverged();
@@ -112,7 +112,7 @@ impl Table {
         let street_before = self.shadow.street();
         let abs_a = self.map_concrete(a, abs);
         self.shadow.apply(abs.concrete(&self.shadow, abs_a));
-        let actor = self.real.to_act();
+        let actor = self.real.to_act().expect("an action needs a live hand");
         self.real.apply(a);
         self.push_token(abs_a, self.shadow.street() != street_before);
         self.resync_if_diverged();
@@ -144,10 +144,8 @@ impl Table {
     }
 
     fn resync_if_diverged(&mut self) {
-        if self.shadow.to_act() != self.real.to_act()
-            || self.shadow.street() != self.real.street()
-            || self.shadow.is_terminal() != self.real.is_terminal()
-        {
+        // Comparing the Options also catches one hand having ended.
+        if self.shadow.to_act() != self.real.to_act() || self.shadow.street() != self.real.street() {
             self.shadow = self.real.clone();
         }
     }
@@ -230,7 +228,7 @@ fn fold_or_check(h: &Hand) -> AbsAction {
 
 pub fn baseline_action(b: Baseline, h: &Hand, abs: &Abstraction, rng: &mut SmallRng) -> AbsAction {
     let preflop = h.street() == crate::engine::Street::Preflop;
-    let hole = h.hole(h.to_act());
+    let hole = h.hole(h.to_act().expect("a baseline acts in a live hand"));
     match b {
         Baseline::Caller => AbsAction::CheckCall,
         Baseline::Random => {
@@ -271,10 +269,9 @@ fn play_one(
 ) -> f64 {
     let mut table = Table::new(cfg, button, deck);
     let mut guard = 0;
-    while !table.real.is_terminal() {
+    while let Some(p) = table.real.to_act() {
         guard += 1;
         assert!(guard < 500, "eval hand did not terminate");
-        let p = table.real.to_act();
         let a = if p == hero {
             policy.act_blueprint(&table.shadow, &table.hist, rng)
         } else {
@@ -346,10 +343,9 @@ pub fn run_crossplay(
             deck.shuffle(&mut rng);
             let mut table = Table::new(cfg, button, deck);
             let mut guard = 0;
-            while !table.real.is_terminal() {
+            while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 500, "crossplay hand did not terminate");
-                let p = table.real.to_act();
                 let pol = if p == hero { focal } else { field };
                 let a = pol.act_blueprint(&table.shadow, &table.hist, &mut rng);
                 table.apply_abs(a, &pol.abs);
@@ -397,10 +393,9 @@ pub fn run_eval_search(
             let mut tracker = RangeTracker::new(n);
             let mut session = crate::bot::SearchSession::new();
             let mut guard = 0;
-            while !table.real.is_terminal() {
+            while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 500, "search eval hand did not terminate");
-                let p = table.real.to_act();
                 let a = if p == hero {
                     policy.act_with_search(
                         &table.real,
@@ -491,10 +486,9 @@ pub fn run_eval_paired_policies(
         let mut tracker = RangeTracker::new(n);
         let mut session = crate::bot::SearchSession::new();
         let mut guard = 0;
-        while !table.real.is_terminal() {
+        while let Some(p) = table.real.to_act() {
             guard += 1;
             assert!(guard < 500, "paired eval hand did not terminate");
-            let p = table.real.to_act();
             let a = match (p == hero, search) {
                 (true, Some(params)) => policy.act_with_search(
                     &table.real,
@@ -777,11 +771,11 @@ mod tests {
         // off-tree mapping drift) while the real hand stays shallow.
         let (_, hi) = t.shadow.raise_bounds().unwrap();
         t.shadow.apply(PlayerAction::RaiseTo(hi)); // shadow: p0 shoves
-        assert!(t.shadow.raise_bounds().is_none() || t.shadow.to_act() == 1);
+        assert!(t.shadow.raise_bounds().is_none() || t.shadow.to_act() == Some(1));
         // Real hand: p0 has merely limped.
         t.real.apply(PlayerAction::CheckCall);
-        assert_eq!(t.real.to_act(), 1);
-        assert_eq!(t.shadow.to_act(), 1);
+        assert_eq!(t.real.to_act(), Some(1));
+        assert_eq!(t.shadow.to_act(), Some(1));
 
         // p1 goes all-in: legal on the real hand; the shadow (facing a
         // 20,000 shove) can only call — must not panic.

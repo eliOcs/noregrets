@@ -117,12 +117,9 @@ fn sample_one(
 
     let mut guard = 0;
     while table.real.street() != Street::Turn {
-        if table.real.is_terminal() {
-            return None;
-        }
+        let p = table.real.to_act()?;
         guard += 1;
         assert!(guard < 200, "sample hand did not terminate");
-        let p = table.real.to_act();
         let a = policy.act_blueprint(&table.shadow, &table.hist, &mut rng);
         tracker.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
         let street_before = table.real.street();
@@ -132,10 +129,10 @@ fn sample_one(
         }
     }
     let h = &table.real;
-    if h.is_terminal() || h.live_count() != 2 {
+    let hero = h.to_act()?;
+    if h.live_count() != 2 {
         return None;
     }
-    let hero = h.to_act();
     let villain = (0..n).find(|&p| p != hero && !h.folded(p))?;
 
     // Perturb tracked ranges toward uniform for input-space coverage

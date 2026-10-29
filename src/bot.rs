@@ -179,7 +179,7 @@ impl Default for SearchParams {
 /// opponent is all-in, and every other live opponent is either all-in or
 /// still owes chips (has yet to respond, and is assumed to fold).
 pub fn preflop_allin_spot(real: &Hand) -> bool {
-    let hero = real.to_act();
+    let Some(hero) = real.to_act() else { return false };
     let bet = real.current_bet();
     let live = |q: usize| q != hero && !real.folded(q);
     real.street() == Street::Preflop
@@ -293,7 +293,7 @@ impl Policy {
     /// exactly what `act_blueprint` samples from, including its check/call
     /// fallback on unseen or mismatched infosets.
     pub fn blueprint_dist(&self, h: &Hand, hist: &[u8], rng: &mut SmallRng) -> (Vec<AbsAction>, Vec<f64>) {
-        let p = h.to_act();
+        let p = h.to_act().expect("a blueprint decision needs a live hand");
         let acts = self.abs.abstract_actions(h);
         let bucket = self.abs.bucket(h.hole(p), h.board(), rng);
         let street = h.street() as usize;
@@ -387,7 +387,7 @@ impl Policy {
         let acts = self.abs.abstract_actions(shadow);
         let fold = acts.iter().position(|&a| a == AbsAction::Fold)?;
         let call = acts.iter().position(|&a| a == AbsAction::CheckCall)?;
-        let hero = real.to_act();
+        let hero = real.to_act()?;
         let hole = real.hole(hero);
         let jammers: Vec<usize> = (0..real.num_players())
             .filter(|&q| q != hero && !real.folded(q) && real.all_in(q))
@@ -409,7 +409,7 @@ impl Policy {
                 let mut g = h.clone();
                 g.apply(first);
                 while !g.is_terminal() {
-                    let a = if g.can_check() || g.to_act() == hero {
+                    let a = if g.can_check() || g.to_act() == Some(hero) {
                         PlayerAction::CheckCall
                     } else {
                         PlayerAction::Fold
@@ -499,7 +499,7 @@ impl Policy {
             limit: Street::Flop,
         });
         let sabs = self.search_abs.clone().unwrap_or_else(|| self.abs.clone());
-        let p = real.to_act();
+        let p = real.to_act().expect("a search decision needs a live hand");
         // Round-start rooting: solve from the start of this betting round
         // with the actions taken so far as the spine (see cfr::Spine).
         let round = round.filter(|r| {
@@ -551,7 +551,7 @@ impl Policy {
         params: SearchParams,
         _rng: &mut SmallRng,
     ) -> Option<(Vec<AbsAction>, Vec<f64>)> {
-        let hero = h.to_act();
+        let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let net_ref: &ValueNet = net;
         let mut solver = crate::flop::FlopSolver::build_sampled(
@@ -585,7 +585,7 @@ impl Policy {
         session: Option<&mut SearchSession>,
         rng: &mut SmallRng,
     ) -> Option<(Vec<AbsAction>, Vec<f64>)> {
-        let hero = h.to_act();
+        let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let mut solver = crate::turn::TurnSolver::build(
             h,
@@ -620,7 +620,7 @@ impl Policy {
         session: Option<&SearchSession>,
         rng: &mut SmallRng,
     ) -> Option<(Vec<AbsAction>, Vec<f64>)> {
-        let hero = h.to_act();
+        let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let mut solver = crate::river::RiverSolver::build(
             h,
@@ -923,9 +923,9 @@ mod tests {
             do_act(&mut h, &mut hist, AbsAction::CheckCall, &abs); // p0 checks
         }
         assert_eq!(h.street(), crate::engine::Street::River);
-        assert_eq!(h.to_act(), 1);
+        assert_eq!(h.to_act(), Some(1));
         do_act(&mut h, &mut hist, AbsAction::AllIn, &abs); // p1 shoves
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         assert!(!h.is_terminal());
 
         let train_cfg = TrainConfig {
@@ -1037,10 +1037,10 @@ mod tests {
             tracker.exclude(table.real.board());
         }
         assert_eq!(table.real.street(), Street::River);
-        assert_eq!(table.real.to_act(), 1);
+        assert_eq!(table.real.to_act(), Some(1));
         table.apply_abs(AbsAction::AllIn, &abs); // p1 shoves
         table.apply_abs(AbsAction::CheckCall, &abs); // p2 calls
-        assert_eq!(table.real.to_act(), 0);
+        assert_eq!(table.real.to_act(), Some(0));
         assert_eq!(table.real.live_count(), 3);
         assert_eq!(table.round.actions.len(), 2);
 
@@ -1124,7 +1124,7 @@ mod tests {
         }
         assert_eq!(h.street(), Street::River);
         act(&mut h, &mut hist, AbsAction::AllIn); // p1 shoves
-        assert_eq!(h.to_act(), 0);
+        assert_eq!(h.to_act(), Some(0));
         tracker.exclude(h.board());
 
         let train_cfg = TrainConfig {
@@ -1204,7 +1204,7 @@ mod tests {
             }
             assert_eq!(table.real.street(), Street::Turn);
             table.apply_abs(AbsAction::AllIn, &abs); // p1 shoves the turn
-            assert_eq!(table.real.to_act(), 0);
+            assert_eq!(table.real.to_act(), Some(0));
             let mut tracker = RangeTracker::new(2);
             tracker.exclude(table.real.board());
 
@@ -1293,7 +1293,7 @@ mod tests {
             table.apply_abs(AbsAction::CheckCall, &abs);
         }
         assert_eq!(table.real.street(), Street::Turn);
-        assert_eq!(table.real.to_act(), 1, "bot (p1) opens the turn");
+        assert_eq!(table.real.to_act(), Some(1), "bot (p1) opens the turn");
 
         let mut tracker = RangeTracker::new(2);
         tracker.exclude(table.real.board());
@@ -1316,14 +1316,14 @@ mod tests {
         let root_len = session.root_hist_len;
         assert_eq!(root_len, table.hist.len());
         table.apply_abs(a1, &abs);
-        if table.real.street() == Street::Turn && table.real.to_act() == 0 {
+        if table.real.street() == Street::Turn && table.real.to_act() == Some(0) {
             // We call/check behind to close the turn.
             table.apply_abs(AbsAction::CheckCall, &abs);
         }
         if table.real.is_terminal() || table.real.street() != Street::River {
             panic!("rig must reach the river, bot chose {a1:?}");
         }
-        assert_eq!(table.real.to_act(), 1, "bot opens the river");
+        assert_eq!(table.real.to_act(), Some(1), "bot opens the river");
 
         // The exact lookup the river resolve performs must succeed on this
         // line: the carried alternatives exist for the realized river card.
@@ -1496,10 +1496,10 @@ mod tests {
             table.apply_abs(AbsAction::CheckCall, &abs);
         }
         assert_eq!(table.real.street(), Street::River);
-        assert_eq!(table.real.to_act(), 1);
+        assert_eq!(table.real.to_act(), Some(1));
         // Villain bets an OFF-TREE 800 into the 200 pot.
         table.apply_concrete(PlayerAction::RaiseTo(800), &abs);
-        assert_eq!(table.real.to_act(), 0);
+        assert_eq!(table.real.to_act(), Some(0));
         assert_eq!(table.real.to_call(), 800, "real price is the off-tree bet");
         assert_eq!(
             table.shadow.to_call(),
@@ -1593,7 +1593,7 @@ mod tests {
         let mut hist: Vec<u8> = Vec::new();
         let mut tracker = RangeTracker::new(2);
         for a in [AbsAction::CheckCall, AbsAction::CheckCall] {
-            tracker.observe(h.to_act(), a, &h, &hist, &bp, &abs);
+            tracker.observe(h.to_act().unwrap(), a, &h, &hist, &bp, &abs);
             let street_before = h.street();
             h.apply(abs.concrete(&h, a));
             hist.push(a.token());
@@ -1626,7 +1626,7 @@ mod tests {
         None,
         );
         assert!(solver.node_count() > 0, "search must create infosets");
-        let p = h.to_act();
+        let p = h.to_act().unwrap();
         let bucket = solver.abs.bucket(h.hole(p), h.board(), &mut rng);
         let strat = solver
             .avg_strategy(bucket, &hist)

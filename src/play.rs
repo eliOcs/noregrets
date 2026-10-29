@@ -49,7 +49,7 @@ pub fn play(policy: &Policy, opts: &PlayOpts) {
         let mut tracker = RangeTracker::new(n).with_widening();
         let mut session = crate::bot::SearchSession::new();
         let mut last_street = Street::Preflop;
-        while !table.real.is_terminal() {
+        while let Some(p) = table.real.to_act() {
             if table.real.street() != last_street {
                 last_street = table.real.street();
                 println!(
@@ -59,7 +59,6 @@ pub fn play(policy: &Policy, opts: &PlayOpts) {
                     table.real.pot()
                 );
             }
-            let p = table.real.to_act();
             let board_before = table.real.board().len();
             if p == HUMAN {
                 match prompt_human(&table) {

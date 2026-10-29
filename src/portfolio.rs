@@ -85,10 +85,9 @@ pub fn run_portfolio_eval(
         let policy = &portfolio.arms[arm];
         let mut table = Table::new(cfg, button, deck);
         let mut guard = 0;
-        while !table.real.is_terminal() {
+        while let Some(p) = table.real.to_act() {
             guard += 1;
             assert!(guard < 500, "portfolio hand did not terminate");
-            let p = table.real.to_act();
             let a = if p == hero {
                 policy.act_blueprint(&table.shadow, &table.hist, &mut rng)
             } else {

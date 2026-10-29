@@ -171,7 +171,7 @@ impl Lbr<'_> {
     /// sunk, so winning them back counts as gain.
     pub fn action(&self, table: &Table, range: &BotRange, bot_seat: usize, rng: &mut SmallRng) -> AbsAction {
         let h = &table.real;
-        let me = h.to_act();
+        let me = h.to_act().expect("LBR acts in a live hand");
         let hole = h.hole(me);
         let board = h.board();
         let wp = self.range_equity(hole, board, &range.weights, rng);
@@ -198,7 +198,7 @@ impl Lbr<'_> {
             };
             let mut sim = table.shadow.clone();
             sim.apply(act);
-            if sim.is_terminal() || sim.to_act() != bot_seat {
+            if sim.to_act() != Some(bot_seat) {
                 continue;
             }
             let resp_acts = self.policy.abs.abstract_actions(&sim);
@@ -283,10 +283,9 @@ pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: u32, seed
             range.exclude(&lbr.combos, &table.real.hole(lbr_seat));
 
             let mut guard = 0;
-            while !table.real.is_terminal() {
+            while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 200, "LBR hand did not terminate");
-                let p = table.real.to_act();
                 let street_before = table.real.street();
                 if p == bot_seat {
                     let acts = policy.abs.abstract_actions(&table.shadow);
@@ -435,7 +434,7 @@ impl Lbr<'_> {
         rng: &mut SmallRng,
     ) -> AbsAction {
         let h = &table.real;
-        let me = h.to_act();
+        let me = h.to_act().expect("LBR acts in a live hand");
         let n = h.num_players();
         let hole = h.hole(me);
         let board = h.board();
@@ -485,12 +484,11 @@ impl Lbr<'_> {
             let mut gain = 0.0;
             let mut any = false;
             let mut guard = 0;
-            while !sim.is_terminal() && sim.to_act() != me {
+            while let Some(j) = sim.to_act().filter(|&p| p != me) {
                 guard += 1;
                 if guard > n {
                     break;
                 }
-                let j = sim.to_act();
                 let resp_acts = self.policy.abs.abstract_actions(&sim);
                 let Some(fold_idx) = resp_acts.iter().position(|&r| r == AbsAction::Fold) else {
                     break;
@@ -597,10 +595,9 @@ pub fn run_lbr_multiway(
             let mut sessions: Vec<crate::bot::SearchSession> =
                 (0..n).map(|_| crate::bot::SearchSession::new()).collect();
             let mut guard = 0;
-            while !table.real.is_terminal() {
+            while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 400, "multiway LBR hand did not terminate");
-                let p = table.real.to_act();
                 let street_before = table.real.street();
                 let a = if p == lbr_seat {
                     lbr.action_multiway(&table, &ranges, &mut rng)
@@ -724,9 +721,9 @@ mod tests {
             t.apply_abs(AbsAction::CheckCall, &policy.abs);
         }
         assert_eq!(t.real.street(), crate::engine::Street::River);
-        assert_eq!(t.real.to_act(), 1);
+        assert_eq!(t.real.to_act(), Some(1));
         t.apply_abs(AbsAction::AllIn, &policy.abs);
-        assert_eq!(t.real.to_act(), 0);
+        assert_eq!(t.real.to_act(), Some(0));
         assert!(!t.real.is_terminal());
         t
     }
