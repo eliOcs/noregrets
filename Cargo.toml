@@ -1,6 +1,6 @@
 [package]
 name = "pluribus"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Pluribus-style 2-6 player no-limit hold'em bot (6-max primary): Linear MCCFR blueprint + online subgame resolving"
