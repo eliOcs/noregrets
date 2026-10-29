@@ -292,7 +292,7 @@ mod tests {
     use crate::abstraction::{preflop_bucket, AbsConfig};
     use crate::cards::{fresh_deck, parse_cards};
     use crate::cfr::{make_key, Blueprint};
-    use crate::engine::HandConfig;
+    use crate::engine::{HandConfig, Players};
     use std::collections::HashSet;
 
     /// Off-model actions must WIDEN the posterior instead of concentrating
@@ -328,7 +328,7 @@ mod tests {
         let bp = Blueprint {
             strategies,
             iterations: 1,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -396,7 +396,7 @@ mod tests {
         let bp = Blueprint {
             strategies,
             iterations: 1,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -424,7 +424,7 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(31);
         let h = Hand::new(
             &HandConfig {
-                num_players: 3,
+                num_players: Players::THREE,
                 ..HandConfig::default()
             },
             0,

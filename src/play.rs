@@ -22,7 +22,7 @@ pub struct PlayOpts {
 const HUMAN: usize = 0;
 
 pub fn play(policy: &Policy, opts: &PlayOpts) {
-    let n = opts.cfg.num_players;
+    let n = opts.cfg.num_players.get();
     let mut rng = SmallRng::seed_from_u64(opts.seed);
     let mut session_bb = 0.0f64;
     let mut hand_no = 0u64;

@@ -40,7 +40,7 @@ struct Counts {
 }
 
 pub fn run(a: &Side, b: &Side, stack: u32, hands: u64, seed: u64) -> Report {
-    let n = a.cfg.num_players;
+    let n = a.cfg.num_players.get();
     let bb = a.cfg.bb as f64;
     let rows: Vec<(f64, f64, Counts)> = (0..hands)
         .into_par_iter()

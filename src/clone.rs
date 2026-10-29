@@ -14,7 +14,7 @@
 use crate::abstraction::Abstraction;
 use crate::cards::{parse_card, Card};
 use crate::cfr::{make_key, Blueprint, StrategyMap};
-use crate::engine::{HandConfig, PlayerAction};
+use crate::engine::{HandConfig, PlayerAction, Players};
 use crate::slumbot::{parse_incr, SlumAct, STACK};
 use crate::table::Table;
 use rand::rngs::SmallRng;
@@ -56,7 +56,7 @@ fn replay_hand(v: &Value, abs: &Abstraction) -> Result<Vec<Decision>, String> {
     let (acts, _) = parse_incr(action, 0)?;
 
     let cfg = HandConfig {
-        num_players: 2,
+        num_players: Players::TWO,
         stack: STACK,
         sb: 50,
         bb: 100,
@@ -227,7 +227,7 @@ pub fn build(
     let bp = Blueprint {
         strategies: counts,
         iterations: stats.decisions,
-        num_players: 2,
+        num_players: Players::TWO,
         abs_cfg: abs.cfg.clone(),
         centroids: abs.centroids.clone(),
     };

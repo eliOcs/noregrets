@@ -44,7 +44,7 @@ pub struct Report {
 }
 
 pub fn run(bot: &Bot, cfg: &HandConfig, resize: Resize, hands: u64, seed: u64) -> Report {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let bb = cfg.bb as f64;
     let rows: Vec<(f64, f64, u64, u64)> = (0..hands)
         .into_par_iter()
@@ -86,7 +86,7 @@ fn play(
     let mut rng = SmallRng::seed_from_u64(seed);
     // Sizing draws its own randomness, so both runs sample actions alike.
     let mut size_rng = SmallRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
-    let stacks = vec![cfg.stack; cfg.num_players];
+    let stacks = vec![cfg.stack; cfg.num_players.get()];
     let mut m = Mirror::new(cfg, button, deck, &stacks);
     let (mut bets, mut changed) = (0, 0);
     for _ in 0..500 {

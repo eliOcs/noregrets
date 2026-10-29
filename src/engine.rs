@@ -10,6 +10,7 @@ use crate::cards::Card;
 use crate::eval::eval_hole_board;
 use rand::rngs::SmallRng;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 pub const MAX_PLAYERS: usize = 6;
 
@@ -42,9 +43,60 @@ pub enum PlayerAction {
     RaiseTo(u32),
 }
 
+/// How many seats a table has: 2 to `MAX_PLAYERS`. Command-line flags and
+/// blueprint files are parsed into this, so a table of any other size
+/// never reaches the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "usize", into = "usize")]
+pub struct Players(u8);
+
+impl Players {
+    pub const TWO: Players = Players(2);
+    pub const THREE: Players = Players(3);
+    pub const SIX: Players = Players(6);
+
+    pub fn new(n: usize) -> Option<Players> {
+        (2..=MAX_PLAYERS).contains(&n).then_some(Players(n as u8))
+    }
+
+    #[inline(always)]
+    pub fn get(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<Players> for usize {
+    fn from(p: Players) -> usize {
+        p.get()
+    }
+}
+
+impl TryFrom<usize> for Players {
+    type Error = String;
+
+    fn try_from(n: usize) -> Result<Players, String> {
+        Players::new(n).ok_or_else(|| format!("a table has 2 to {MAX_PLAYERS} players, not {n}"))
+    }
+}
+
+impl std::str::FromStr for Players {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Players, String> {
+        let n: usize = s.parse().map_err(|_| format!("'{s}' is not a number of players"))?;
+        Players::try_from(n)
+    }
+}
+
+impl std::fmt::Display for Players {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HandConfig {
-    pub num_players: usize,
+    pub num_players: Players,
     pub stack: u32,
     pub sb: u32,
     pub bb: u32,
@@ -53,7 +105,7 @@ pub struct HandConfig {
 impl Default for HandConfig {
     fn default() -> Self {
         HandConfig {
-            num_players: 6,
+            num_players: Players::SIX,
             stack: 10_000,
             sb: 50,
             bb: 100,
@@ -104,7 +156,7 @@ impl Hand {
     /// Deal a new hand. Holes: player p gets deck[2p], deck[2p+1].
     /// Board comes from deck[2n..2n+5] as streets are dealt.
     pub fn new(cfg: &HandConfig, button: usize, deck: [Card; 52]) -> Hand {
-        let stacks = vec![cfg.stack; cfg.num_players];
+        let stacks = vec![cfg.stack; cfg.num_players.get()];
         Hand::new_with_stacks(cfg, button, deck, &stacks)
     }
 
@@ -114,7 +166,7 @@ impl Hand {
         deck: [Card; 52],
         stacks: &[u32],
     ) -> Hand {
-        let n = cfg.num_players;
+        let n = cfg.num_players.get();
         assert!((2..=MAX_PLAYERS).contains(&n));
         assert_eq!(stacks.len(), n);
         assert!(button < n);
@@ -574,9 +626,20 @@ mod tests {
 
     fn cfg(n: usize) -> HandConfig {
         HandConfig {
-            num_players: n,
+            num_players: Players::new(n).unwrap(),
             ..HandConfig::default()
         }
+    }
+
+    #[test]
+    fn only_playable_table_sizes_exist() {
+        assert_eq!(Players::new(1), None);
+        assert_eq!(Players::new(7), None);
+        assert_eq!("6".parse::<Players>(), Ok(Players::SIX));
+        assert!("7".parse::<Players>().is_err());
+        // Blueprint files keep the usize encoding, and loading checks it.
+        assert_eq!(bincode::serialize(&Players::SIX).unwrap(), bincode::serialize(&6usize).unwrap());
+        assert!(bincode::deserialize::<Players>(&bincode::serialize(&7usize).unwrap()).is_err());
     }
 
     #[test]

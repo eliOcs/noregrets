@@ -12,7 +12,7 @@
 
 use crate::bot::Policy;
 use crate::cards::{parse_card, Card};
-use crate::engine::{HandConfig, PlayerAction, Street};
+use crate::engine::{HandConfig, PlayerAction, Players, Street};
 use crate::table::Table;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -129,8 +129,9 @@ pub fn replay_hand(
     policy: &Policy,
     seed: u64,
 ) -> Result<(Vec<Decision>, Option<bool>), ReplayError> {
-    let n = phh.players.len();
-    if !(2..=6).contains(&n) || phh.stacks.len() != n {
+    let players = Players::new(phh.players.len()).ok_or(ReplayError::Unsupported)?;
+    let n = players.get();
+    if phh.stacks.len() != n {
         return Err(ReplayError::Unsupported);
     }
     let hero = phh
@@ -207,7 +208,7 @@ pub fn replay_hand(
     deck[2 * n + 5..].copy_from_slice(&tail);
 
     let cfg = HandConfig {
-        num_players: n,
+        num_players: players,
         stack: phh.stacks[0],
         sb: phh.sb,
         bb: phh.bb,
@@ -387,7 +388,7 @@ finishing_stacks = [10325, 9900, 10000, 10000, 9775, 10000]
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 6,
+                num_players: Players::SIX,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -461,7 +462,7 @@ finishing_stacks = [10325, 9900, 10000, 10000, 9775, 10000]
         let bp = Blueprint {
             strategies,
             iterations: 1,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };

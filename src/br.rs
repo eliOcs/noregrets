@@ -424,7 +424,7 @@ pub fn run_br(
     seed: u64,
     search: Option<crate::bot::SearchParams>,
 ) -> BrResult {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let bb = cfg.bb as f64;
     let lbr = Lbr::new(policy, runouts);
     let combos = all_combos();
@@ -542,6 +542,7 @@ pub fn run_br(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Players;
     use crate::abstraction::{AbsConfig, Abstraction};
     use crate::cards::parse_cards;
     use crate::cfr::Blueprint;
@@ -564,7 +565,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -593,7 +594,7 @@ mod tests {
     /// HU table checked down to the river, p1 shoves, p0 to act.
     fn river_facing_shove(front: &str, policy: &Policy) -> Table {
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -611,7 +612,7 @@ mod tests {
     /// HU table checked to p0's turn decision facing p1's shove.
     fn turn_facing_shove(front: &str, policy: &Policy) -> Table {
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -677,7 +678,7 @@ mod tests {
     fn br_plans_multistreet_value_extraction_with_the_nuts() {
         let policy = empty_policy();
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -707,7 +708,7 @@ mod tests {
     fn br_probe_crushes_a_calling_station_and_is_deterministic() {
         let policy = empty_policy();
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             ..HandConfig::default()
         };
         let r1 = run_br(&policy, &cfg, 200, 16, 99, None);
@@ -744,7 +745,7 @@ mod tests {
     fn build_rejects_wrong_streets_and_multiway() {
         let policy = empty_policy();
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,

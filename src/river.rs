@@ -725,7 +725,7 @@ mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
     use crate::cards::{fresh_deck, parse_cards};
-    use crate::engine::{HandConfig, PlayerAction};
+    use crate::engine::{HandConfig, PlayerAction, Players};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
@@ -757,7 +757,7 @@ mod tests {
             }
         }
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,

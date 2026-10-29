@@ -261,7 +261,7 @@ pub struct LbrResult {
 /// Run the LBR probe: LBR and the bot in the two blind seats (alternating by
 /// hand), every other seat folds. Stacks reset per hand, button random.
 pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: u32, seed: u64) -> LbrResult {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let bb = cfg.bb as f64;
     let lbr = Lbr::new(policy, runouts);
     let results: Vec<f64> = (0..hands)
@@ -559,7 +559,7 @@ pub fn run_lbr_multiway(
     seed: u64,
     search: Option<crate::bot::SearchParams>,
 ) -> LbrResult {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let bb = cfg.bb as f64;
     let lbr = Lbr::new(policy, runouts);
     let train_cfg = crate::cfr::TrainConfig {
@@ -659,6 +659,7 @@ pub fn run_lbr_multiway(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Players;
     use crate::abstraction::{preflop_bucket, AbsConfig, Abstraction};
     use crate::cards::parse_cards;
     use crate::cfr::{make_key, Blueprint};
@@ -680,7 +681,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -711,7 +712,7 @@ mod tests {
     /// Deck layout: p0 = first two cards, p1 = next two, board = next five.
     fn river_facing_shove(front: &str, policy: &Policy) -> Table {
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -778,7 +779,7 @@ mod tests {
             Blueprint {
                 strategies,
                 iterations: 1,
-                num_players: 6,
+                num_players: Players::SIX,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -825,7 +826,7 @@ mod tests {
     fn lbr_crushes_a_calling_station() {
         let policy = empty_policy();
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             ..HandConfig::default()
         };
         let r = run_lbr(&policy, &cfg, 600, 16, 99);

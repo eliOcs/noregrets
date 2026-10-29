@@ -41,7 +41,7 @@ use bot::{Policy, SearchParams};
 use cfr::{Blueprint, TrainConfig, Trainer};
 use clap::{Parser, Subcommand};
 use abstraction::MenuShape;
-use engine::HandConfig;
+use engine::{HandConfig, Players};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use table::Baseline;
@@ -66,8 +66,8 @@ enum Cmd {
         /// Output blueprint file.
         #[arg(long, default_value = "blueprint.bin")]
         out: String,
-        #[arg(long, default_value_t = 6)]
-        players: usize,
+        #[arg(long, default_value_t = Players::SIX)]
+        players: Players,
         /// Starting stack in chips (blinds are 50/100, so 10,000 = 100bb
         /// — the Pluribus setup — and 20,000 = 200bb — the Slumbot / GTO
         /// Wizard benchmark setup).
@@ -222,8 +222,8 @@ enum Cmd {
     Play {
         #[arg(long, default_value = "blueprint.bin")]
         blueprint: String,
-        #[arg(long, default_value_t = 6)]
-        players: usize,
+        #[arg(long, default_value_t = Players::SIX)]
+        players: Players,
         /// Online subgame resolving for the bots' postflop decisions is
         /// on by default (A3 gate, Aug 2026); this flag is kept for
         /// scripts and is a no-op.
@@ -450,8 +450,8 @@ enum Cmd {
         /// shover | push-fold | nit.
         #[arg(long, default_value = "random")]
         baseline: Baseline,
-        #[arg(long, default_value_t = 6)]
-        players: usize,
+        #[arg(long, default_value_t = Players::SIX)]
+        players: Players,
         /// Duplicate mode: play each deal once per seat (hero rotating) and
         /// average within the deal — large variance reduction, same estimand.
         #[arg(long)]
@@ -1478,7 +1478,7 @@ fn main() {
             } else if aivat {
                 aivat::run_eval_aivat(&policy, &cfg, baseline, hands, seed)
             } else if duplicate {
-                table::run_eval_duplicate(&policy, &cfg, baseline, hands / players as u64, seed)
+                table::run_eval_duplicate(&policy, &cfg, baseline, hands / players.get() as u64, seed)
             } else {
                 table::run_eval(&policy, &cfg, baseline, hands, seed)
             };
@@ -1822,7 +1822,7 @@ fn main() {
                 Arc::new(n)
             });
             let policy = load_policy(&blueprint).with_value_net(net);
-            if policy.blueprint.num_players != 2 {
+            if policy.blueprint.num_players != Players::TWO {
                 die("Slumbot is heads-up: train with --players 2 --stack 20000");
             }
             let mut transport = slumbot::HttpTransport;

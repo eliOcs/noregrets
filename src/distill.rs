@@ -63,7 +63,7 @@ pub fn expand_dist(slim: &[AbsAction], dist: &[f64], full: &[AbsAction]) -> Opti
 /// distributions at searched postflop decisions. Returns the accumulated
 /// records and the number of recorded decisions.
 pub fn collect(policy: &Policy, cfg: &HandConfig, dcfg: &DistillCfg) -> (Records, u64) {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let train_cfg = crate::cfr::TrainConfig {
         hand: cfg.clone(),
         prune_after: u64::MAX,
@@ -186,6 +186,7 @@ pub fn merge(mut bp: Blueprint, records: &Records, alpha: f64) -> (Blueprint, u6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Players;
     use crate::abstraction::{AbsConfig, Abstraction, Centroids};
     use crate::cfr::{TrainConfig, Trainer};
     use std::sync::Arc;
@@ -200,7 +201,7 @@ mod tests {
         let old = Blueprint {
             strategies,
             iterations: 7,
-            num_players: 2,
+            num_players: Players::TWO,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -261,7 +262,7 @@ mod tests {
         let cents = Centroids::train(&abs_cfg, 300, 5);
         let abs = Arc::new(Abstraction::with_centroids(abs_cfg, Some(cents)));
         let hand = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 1_000,
             sb: 50,
             bb: 100,

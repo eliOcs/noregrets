@@ -72,7 +72,7 @@ pub fn run_portfolio_eval(
     hands: u64,
     seed: u64,
 ) -> (EvalResult, Vec<u64>) {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let bb = cfg.bb as f64;
     let mut results = Vec::with_capacity(hands as usize);
     for i in 0..hands {
@@ -119,6 +119,7 @@ pub fn run_portfolio_eval(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Players;
     use crate::abstraction::{AbsConfig, Abstraction, Centroids};
     use crate::cfr::{RnrCfg, TrainConfig, Trainer};
     use std::sync::Arc;
@@ -136,7 +137,7 @@ mod tests {
         let abs = Arc::new(Abstraction::with_centroids(abs_cfg, Some(cents)));
         let cfg = TrainConfig {
             hand: HandConfig {
-                num_players: 2,
+                num_players: Players::TWO,
                 stack: 1_000,
                 sb: 50,
                 bb: 100,
@@ -156,7 +157,7 @@ mod tests {
     #[test]
     fn bandit_converges_to_the_exploitative_arm() {
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 1_000,
             sb: 50,
             bb: 100,

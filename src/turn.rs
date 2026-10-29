@@ -705,7 +705,7 @@ mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
     use crate::cards::{fresh_deck, parse_cards};
-    use crate::engine::{HandConfig, PlayerAction};
+    use crate::engine::{HandConfig, PlayerAction, Players};
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
@@ -734,7 +734,7 @@ mod tests {
             }
         }
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,

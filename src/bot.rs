@@ -11,7 +11,7 @@
 
 use crate::abstraction::{AbsAction, AbsConfig, Abstraction, BetSize};
 use crate::cfr::{sample_index, Blueprint, LeafCfg, Spine, TrainConfig, Trainer};
-use crate::engine::{Hand, PlayerAction, Street};
+use crate::engine::{Hand, PlayerAction, Players, Street};
 use crate::mirror::Strategies;
 use crate::search::RangeTracker;
 use crate::table::RoundRoot;
@@ -241,7 +241,7 @@ impl Policy {
     /// A policy over any strategy store (compact blueprint, preflop
     /// overlay). Commands that need the training blueprint's map (distill,
     /// strategic clustering) cannot use it.
-    pub fn from_strategies(strategies: Arc<dyn Strategies>, num_players: usize, abs: Arc<Abstraction>) -> Self {
+    pub fn from_strategies(strategies: Arc<dyn Strategies>, num_players: Players, abs: Arc<Abstraction>) -> Self {
         let blueprint = Arc::new(Blueprint {
             strategies: Default::default(),
             iterations: 0,
@@ -783,7 +783,7 @@ mod tests {
     use crate::abstraction::AbsConfig;
     use crate::cards::{fresh_deck, parse_cards, Card};
     use crate::cfr::make_key;
-    use crate::engine::{HandConfig, PlayerAction};
+    use crate::engine::{HandConfig, PlayerAction, Players};
     use rand::SeedableRng;
 
     fn abs_small() -> Abstraction {
@@ -810,7 +810,7 @@ mod tests {
         let bp = Blueprint {
             strategies,
             iterations: 1,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -841,7 +841,7 @@ mod tests {
         let bp = Blueprint {
             strategies,
             iterations: 1,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -865,7 +865,7 @@ mod tests {
         let bp = Blueprint {
             strategies: Default::default(),
             iterations: 0,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -898,7 +898,7 @@ mod tests {
         }
 
         let hand_cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -996,7 +996,7 @@ mod tests {
             }
         }
         let hand_cfg = HandConfig {
-            num_players: 3,
+            num_players: Players::THREE,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -1016,7 +1016,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 3,
+                num_players: Players::THREE,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -1091,7 +1091,7 @@ mod tests {
             }
         }
         let hand_cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -1102,7 +1102,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -1176,7 +1176,7 @@ mod tests {
             }
         }
         let hand_cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -1186,7 +1186,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -1259,7 +1259,7 @@ mod tests {
             }
         }
         let hand_cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -1269,7 +1269,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -1391,7 +1391,7 @@ mod tests {
             }
         }
         let hand_cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -1401,7 +1401,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -1470,7 +1470,7 @@ mod tests {
             }
         }
         let hand_cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
@@ -1484,7 +1484,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -1572,7 +1572,7 @@ mod tests {
         use crate::search::RangeTracker;
         let abs = Arc::new(abs_small());
         let hand_cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             ..HandConfig::default()
         };
         let train_cfg = TrainConfig {

@@ -19,7 +19,7 @@ use crate::abstraction::AbsAction;
 use crate::bot::{Policy, SearchParams, SearchSession};
 use crate::cards::{parse_card, Card};
 use crate::cfr::TrainConfig;
-use crate::engine::{HandConfig, PlayerAction};
+use crate::engine::{HandConfig, PlayerAction, Players};
 use crate::search::RangeTracker;
 use crate::table::Table;
 use rand::rngs::SmallRng;
@@ -269,7 +269,7 @@ impl HandState {
             return Err("bad hole cards".into());
         }
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: STACK,
             sb: 50,
             bb: 100,
@@ -390,7 +390,7 @@ pub fn run(
 ) -> Result<SlumbotResult, String> {
     let train_cfg = TrainConfig {
         hand: HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: STACK,
             sb: 50,
             bb: 100,
@@ -626,7 +626,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 2,
+                num_players: Players::TWO,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },

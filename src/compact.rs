@@ -25,6 +25,7 @@
 use crate::abstraction::{AbsConfig, BucketTable, CanonTable, Centroids};
 use crate::cfr::{make_key, Blueprint};
 use crate::mirror::Strategies;
+use crate::engine::Players;
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -40,7 +41,7 @@ const INDEX_ENTRY: usize = 13;
 #[derive(Serialize, Deserialize)]
 pub struct Header {
     pub iterations: u64,
-    pub num_players: usize,
+    pub num_players: Players,
     pub abs_cfg: AbsConfig,
     pub centroids: Option<Centroids>,
     pub records: u64,
@@ -54,7 +55,7 @@ pub struct Header {
 #[derive(Serialize, Deserialize)]
 struct HeaderV2 {
     iterations: u64,
-    num_players: usize,
+    num_players: Players,
     abs_cfg: AbsConfig,
     centroids: Option<Centroids>,
     records: u64,
@@ -342,7 +343,7 @@ mod tests {
         Blueprint {
             strategies,
             iterations: 7,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         }

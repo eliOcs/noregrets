@@ -108,7 +108,7 @@ fn sample_one(
     seed: u64,
 ) -> Option<TurnSample> {
     let mut rng = SmallRng::seed_from_u64(seed);
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let button = rng.random_range(0..n);
     let mut deck = fresh_deck();
     deck.shuffle(&mut rng);
@@ -347,6 +347,7 @@ impl ValueNet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Players;
     use crate::abstraction::{AbsConfig, Abstraction};
     use crate::cfr::{TrainConfig, Trainer};
     use std::sync::Arc;
@@ -375,7 +376,7 @@ mod tests {
 
     fn hu_cfg() -> HandConfig {
         HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             ..HandConfig::default()
         }
     }

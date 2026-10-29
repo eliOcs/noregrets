@@ -10,7 +10,7 @@
 
 use crate::abstraction::{AbsAction, AbsConfig, Abstraction, Centroids, TOKEN_LEAF, TOKEN_STREET_SEP};
 use crate::cards::fresh_deck;
-use crate::engine::{Hand, HandConfig, PlayerAction, Street, MAX_PLAYERS};
+use crate::engine::{Hand, HandConfig, PlayerAction, Players, Street, MAX_PLAYERS};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -451,7 +451,7 @@ impl Trainer {
     /// `progress` is called periodically with total completed iterations.
     pub fn run(&self, iterations: u64, progress: &(dyn Fn(u64) + Sync)) {
         let start = self.iters_done.load(Ordering::Relaxed);
-        let n = self.cfg.hand.num_players;
+        let n = self.cfg.hand.num_players.get();
         // Traversals are batched per rayon task: hundreds of millions of
         // one-traversal tasks pay measurable scheduler overhead. Each
         // traversal keeps its own t-derived rng, so results are identical
@@ -930,7 +930,7 @@ impl Trainer {
     /// seat's own reach and every other player's actions. Returns the
     /// number of infosets updated.
     pub fn sweep_preflop_average(&self, weight: f64) -> usize {
-        let n = self.cfg.hand.num_players;
+        let n = self.cfg.hand.num_players.get();
         let jobs: Vec<(usize, u16)> = (0..n).flat_map(|p| (0..169u16).map(move |b| (p, b))).collect();
         jobs.par_iter()
             .map(|&(p, b)| {
@@ -1052,7 +1052,7 @@ struct LegacyAbsConfig {
 struct LegacyBlueprint {
     strategies: StrategyMap,
     iterations: u64,
-    num_players: usize,
+    num_players: Players,
     abs_cfg: LegacyAbsConfig,
     centroids: Option<Centroids>,
 }
@@ -1131,7 +1131,7 @@ pub type StrategyMap = HashMap<Vec<u8>, Vec<f32>, ahash::RandomState>;
 pub struct Blueprint {
     pub strategies: StrategyMap,
     pub iterations: u64,
-    pub num_players: usize,
+    pub num_players: Players,
     pub abs_cfg: AbsConfig,
     pub centroids: Option<Centroids>,
 }
@@ -1199,7 +1199,7 @@ mod tests {
         let abs = Abstraction::with_centroids(abs_cfg, Some(cents));
         let cfg = TrainConfig {
             hand: HandConfig {
-                num_players: 2,
+                num_players: Players::TWO,
                 stack: 1_000,
                 sb: 50,
                 bb: 100,
@@ -1294,7 +1294,7 @@ mod tests {
             Policy::new(bp, Arc::new(abs))
         };
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 1_000,
             sb: 50,
             bb: 100,
@@ -1336,7 +1336,7 @@ mod tests {
         let empty_opp = Arc::new(Blueprint {
             strategies: Default::default(),
             iterations: 0,
-            num_players: 2,
+            num_players: Players::TWO,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         });
@@ -1350,7 +1350,7 @@ mod tests {
                 .with_rnr_opponent(Some(empty_opp)),
         );
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 1_000,
             sb: 50,
             bb: 100,
@@ -1447,7 +1447,7 @@ mod tests {
     fn spine_step_matches_history_and_seat() {
         let abs = Abstraction::new(AbsConfig::default());
         let cfg = HandConfig {
-            num_players: 3,
+            num_players: Players::THREE,
             ..HandConfig::default()
         };
         let h0 = Hand::new(&cfg, 0, fresh_deck()); // p0 to act preflop
@@ -1665,7 +1665,7 @@ mod tests {
         bp.save(bp_s).unwrap();
         let bp2 = Blueprint::load(bp_s).unwrap();
         assert_eq!(bp.strategies.len(), bp2.strategies.len());
-        assert_eq!(bp2.num_players, 2);
+        assert_eq!(bp2.num_players, Players::TWO);
         assert_eq!(bp2.abs_cfg.postflop_buckets, 6);
         assert_eq!(bp2.centroids, t.abs.centroids);
         // Strategies are normalized distributions.

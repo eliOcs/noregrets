@@ -302,7 +302,7 @@ pub fn run_eval(
     hands: u64,
     seed: u64,
 ) -> EvalResult {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let results: Vec<f64> = (0..hands)
         .into_par_iter()
         .map(|i| {
@@ -335,7 +335,7 @@ pub fn run_crossplay(
     hands: u64,
     seed: u64,
 ) -> EvalResult {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let results: Vec<f64> = (0..hands)
         .into_par_iter()
         .map(|i| {
@@ -379,7 +379,7 @@ pub fn run_eval_search(
     seed: u64,
 ) -> EvalResult {
     use crate::search::RangeTracker;
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let train_cfg = crate::cfr::TrainConfig {
         hand: cfg.clone(),
         prune_after: u64::MAX,
@@ -467,7 +467,7 @@ pub fn run_eval_paired_policies(
     seed: u64,
 ) -> EvalResult {
     use crate::search::RangeTracker;
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let train_cfg = crate::cfr::TrainConfig {
         hand: cfg.clone(),
         prune_after: u64::MAX,
@@ -554,7 +554,7 @@ pub fn run_eval_duplicate(
     deals: u64,
     seed: u64,
 ) -> EvalResult {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let results: Vec<f64> = (0..deals)
         .into_par_iter()
         .map(|i| {
@@ -589,7 +589,7 @@ mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
     use crate::cfr::Blueprint;
-    use crate::engine::Street;
+    use crate::engine::{Players, Street};
 
     #[test]
     fn baseline_ranges_have_their_documented_sizes() {
@@ -614,7 +614,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 6,
+                num_players: Players::SIX,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -626,7 +626,7 @@ mod tests {
     fn round_root_tracks_the_current_betting_round() {
         let abs = abs_small();
         let cfg = HandConfig {
-            num_players: 3,
+            num_players: Players::THREE,
             ..HandConfig::default()
         };
         let mut t = Table::new(&cfg, 0, fresh_deck());
@@ -740,7 +740,7 @@ mod tests {
     fn search_eval_smoke() {
         let policy = empty_policy();
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             ..HandConfig::default()
         };
         let params = crate::bot::SearchParams {
@@ -767,7 +767,7 @@ mod tests {
             menu: crate::abstraction::MenuShape::Wide,
         });
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 20_000,
             sb: 50,
             bb: 100,

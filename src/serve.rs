@@ -16,7 +16,7 @@
 use crate::bot::{Policy, SearchParams};
 use crate::cards::Card;
 use crate::cfr::TrainConfig;
-use crate::engine::{HandConfig, PlayerAction, Street};
+use crate::engine::{HandConfig, PlayerAction, Players, Street};
 use crate::mirror::{Bot, Mirror, Source};
 use crate::search::RangeTracker;
 use rand::rngs::SmallRng;
@@ -99,7 +99,8 @@ pub struct Spot {
 }
 
 impl Spot {
-    pub fn new(req: Request, players: usize) -> Result<Spot, String> {
+    pub fn new(req: Request, players: Players) -> Result<Spot, String> {
+        let players = players.get();
         if req.stacks.len() != players {
             return Err(format!("expected {players} stacks, got {}", req.stacks.len()));
         }
@@ -158,7 +159,7 @@ impl Spot {
 
 /// Read one request line into a `Spot`. The id is read first, so every
 /// error about a request that carries an id echoes it.
-fn read_request(line: &str, players: usize) -> Result<Spot, (Option<u64>, String)> {
+fn read_request(line: &str, players: Players) -> Result<Spot, (Option<u64>, String)> {
     let value: serde_json::Value =
         serde_json::from_str(line).map_err(|e| (None, format!("bad request: {e}")))?;
     let id = value.get("id").and_then(serde_json::Value::as_u64);
@@ -292,7 +293,7 @@ pub fn decide_with_search(bot: &Bot, cfg: &HandConfig, s: &Searcher, spot: &Spot
         return Ok(Decision { strategy: choices_json(choices), source });
     }
     let policy = &s.policy;
-    let mut tracker = RangeTracker::new(cfg.num_players);
+    let mut tracker = RangeTracker::new(cfg.num_players.get());
     let mut board = 0;
     for o in mirror.log() {
         if o.shadow.board().len() > board {
@@ -338,7 +339,7 @@ fn choices_json(choices: Vec<(PlayerAction, f64)>) -> Vec<Choice> {
 /// asks about: the hand is live, its seat is to act, and its board is the
 /// board of the street the actions reach.
 fn replay(bot: &Bot, cfg: &HandConfig, spot: &Spot, log: bool) -> Result<Mirror, String> {
-    debug_assert_eq!(spot.stacks.len(), cfg.num_players, "a spot built for another table");
+    debug_assert_eq!(spot.stacks.len(), cfg.num_players.get(), "a spot built for another table");
     let mut mirror = Mirror::new(cfg, spot.button, spot.deck(), &spot.stacks);
     if log {
         mirror = mirror.with_log();
@@ -396,7 +397,7 @@ mod tests {
         let bp = Blueprint {
             strategies,
             iterations: 0,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -419,7 +420,7 @@ mod tests {
     }
 
     fn spot(req: Request) -> Spot {
-        Spot::new(req, 6).unwrap()
+        Spot::new(req, Players::SIX).unwrap()
     }
 
     fn cfg() -> HandConfig {
@@ -535,7 +536,7 @@ mod tests {
     #[test]
     fn rejects_requests_that_do_not_match_the_hand() {
         let p = bot(StrategyMap::default());
-        let err = |req: Request| Spot::new(req, 6).and_then(|s| decide(&p, &cfg(), &s)).unwrap_err();
+        let err = |req: Request| Spot::new(req, Players::SIX).and_then(|s| decide(&p, &cfg(), &s)).unwrap_err();
         assert!(err(request(STACK, 4, ["Ah", "Kd"], &[], vec![])).contains("seat 3 is to act"));
         assert!(err(request(STACK, UTG, ["Ah", "Ah"], &[], vec![])).contains("twice"));
         assert!(err(request(STACK, UTG, ["Ah", "Kd"], &["2c", "3c", "4c"], vec![])).contains("board"));
@@ -582,7 +583,7 @@ mod tests {
         let bp = Blueprint {
             strategies: StrategyMap::default(),
             iterations: 0,
-            num_players: 6,
+            num_players: Players::SIX,
             abs_cfg: AbsConfig::default(),
             centroids: None,
         };
@@ -672,16 +673,16 @@ mod tests {
                     "seat":3,"hole":{hole},"board":[],"actions":[]}}"#
             )
         };
-        let (id, e) = read_request(&line(r#"["Ah","Xd"]"#), 6).unwrap_err();
+        let (id, e) = read_request(&line(r#"["Ah","Xd"]"#), Players::SIX).unwrap_err();
         assert_eq!(id, Some(7));
         assert!(e.contains("bad card"), "{e}");
-        let (id, e) = read_request(&line(r#"["Ah"]"#), 6).unwrap_err();
+        let (id, e) = read_request(&line(r#"["Ah"]"#), Players::SIX).unwrap_err();
         assert_eq!(id, Some(7));
         assert!(e.contains("two hole cards"), "{e}");
-        let (id, e) = read_request(&line(r#"["Ah","Kd"]"#), 5).unwrap_err();
+        let (id, e) = read_request(&line(r#"["Ah","Kd"]"#), Players::new(5).unwrap()).unwrap_err();
         assert_eq!(id, Some(7));
         assert!(e.contains("expected 5 stacks"), "{e}");
-        assert_eq!(read_request("not json", 6).unwrap_err().0, None);
-        assert!(read_request(&line(r#"["Ah","Kd"]"#), 6).is_ok());
+        assert_eq!(read_request("not json", Players::SIX).unwrap_err().0, None);
+        assert!(read_request(&line(r#"["Ah","Kd"]"#), Players::SIX).is_ok());
     }
 }

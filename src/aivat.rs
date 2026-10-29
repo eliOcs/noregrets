@@ -149,7 +149,7 @@ fn play_one_aivat(
     ac: &AivatCfg,
     rng: &mut SmallRng,
 ) -> f64 {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let mut table = Table::new(cfg, button, deck);
     let mut actions: Vec<PlayerAction> = Vec::with_capacity(24);
     let mut corr = 0.0;
@@ -276,7 +276,7 @@ pub fn run_eval_aivat(
     hands: u64,
     seed: u64,
 ) -> EvalResult {
-    let n = cfg.num_players;
+    let n = cfg.num_players.get();
     let ac = AivatCfg {
         alt_samples: 24,
         runouts: 128,
@@ -309,6 +309,7 @@ pub fn run_eval_aivat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Players;
     use crate::abstraction::{AbsConfig, Abstraction};
     use crate::cards::parse_cards;
     use crate::cfr::Blueprint;
@@ -320,7 +321,7 @@ mod tests {
             Blueprint {
                 strategies: Default::default(),
                 iterations: 0,
-                num_players: 6,
+                num_players: Players::SIX,
                 abs_cfg: AbsConfig::default(),
                 centroids: None,
             },
@@ -355,7 +356,7 @@ mod tests {
             }
         }
         let cfg = HandConfig {
-            num_players: 2,
+            num_players: Players::TWO,
             stack: 2_000,
             sb: 50,
             bb: 100,
