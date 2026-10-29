@@ -16,11 +16,11 @@
 //! value network.
 
 use crate::abstraction::{AbsAction, Abstraction, BetSize, Token};
-use crate::cards::Card;
+use crate::cards::{Card, Hole};
 use crate::engine::{Hand, Street};
 use crate::eval::{eval_hole_board, HandValue};
 use crate::river::showdown_sweep;
-use crate::search::{all_combos, combo_index, NUM_COMBOS};
+use crate::search::{all_combos, NUM_COMBOS};
 
 enum Kid {
     Node(usize),
@@ -102,7 +102,7 @@ struct Gadget {
 }
 
 pub struct TurnSolver {
-    combos: Vec<[Card; 2]>,
+    combos: Vec<Hole>,
     /// Initial (unnormalized) ranges, board conflicts zeroed.
     range: [Vec<f64>; 2],
     /// The unseen candidate river cards (board conflicts excluded).
@@ -123,7 +123,7 @@ pub struct TurnSolver {
 impl TurnSolver {
     /// Build the turn+river tree from a decision point `h` (turn street,
     /// exactly two live players; `h.to_act()` becomes solver player 0).
-    /// `ranges` are tracked weights indexed by `combo_index` for
+    /// `ranges` are tracked weights indexed by `Hole::index` for
     /// [to_act, other]; `keep` are the allowed `BET_SIZES` indices (fold,
     /// check/call and all-in always stay).
     pub fn build(
@@ -146,7 +146,7 @@ impl TurnSolver {
         for &c in &board {
             on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
+        let valid = |c: &Hole| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut range = [vec![0.0; NUM_COMBOS], vec![0.0; NUM_COMBOS]];
         for (pi, r) in range.iter_mut().enumerate() {
@@ -445,11 +445,11 @@ impl TurnSolver {
     }
 
     /// Average strategy at the root for solver player 0's `hole`.
-    pub fn root_strategy(&self, hole: [Card; 2]) -> Option<(Vec<AbsAction>, Vec<f64>)> {
+    pub fn root_strategy(&self, hole: Hole) -> Option<(Vec<AbsAction>, Vec<f64>)> {
         let node = &self.nodes[self.root()];
         debug_assert_eq!(node.player, 0);
         let n_acts = node.acts.len();
-        let ci = combo_index(hole[0], hole[1]);
+        let ci = hole.index();
         let s = &node.strat[ci * n_acts..(ci + 1) * n_acts];
         let total: f64 = s.iter().sum();
         if total <= 0.0 {
@@ -792,7 +792,7 @@ mod tests {
         s.solve(60, 60_000);
 
         let nuts = parse_cards("As Ks").unwrap();
-        let (acts, p) = s.root_strategy([nuts[0], nuts[1]]).unwrap();
+        let (acts, p) = s.root_strategy(Hole::new(nuts[0], nuts[1]).unwrap()).unwrap();
         assert_eq!(acts[0], AbsAction::Fold);
         assert!(p[1] > 0.95, "royal must call the shove, got {p:?}");
 
@@ -806,7 +806,7 @@ mod tests {
         // every combo, so normalized value ≈ +2000 − (already-sunk
         // accounting is inside the terminal: win_v = +2000).
         let v = s.root_values(0);
-        let ci = combo_index(nuts[0], nuts[1]);
+        let ci = Hole::new(nuts[0], nuts[1]).unwrap().index();
         assert!(
             (v[ci] - 2000.0).abs() < 60.0,
             "made royal must value ~+2000 (wins every river), got {}",
@@ -827,7 +827,7 @@ mod tests {
         // paid an unbeatable +5000 for leaving (more than any subgame line
         // can win: the pot ceiling is +2000).
         let paid = crate::cards::parse_cards("2c 2d").unwrap();
-        let paid_ci = combo_index(paid[0], paid[1]);
+        let paid_ci = Hole::new(paid[0], paid[1]).unwrap().index();
         let mut alt = vec![-200.0; NUM_COMBOS];
         alt[paid_ci] = 5_000.0;
         let mut s = TurnSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75])
@@ -836,7 +836,7 @@ mod tests {
         s.solve(60, 60_000);
 
         let nuts = parse_cards("As Ks").unwrap();
-        let (acts, p) = s.root_strategy([nuts[0], nuts[1]]).unwrap();
+        let (acts, p) = s.root_strategy(Hole::new(nuts[0], nuts[1]).unwrap()).unwrap();
         assert_eq!(acts[0], AbsAction::Fold);
         assert!(p[1] > 0.95, "royal must call the shove under the gadget, got {p:?}");
         assert!(
@@ -869,8 +869,8 @@ mod tests {
         // must carry far more than junk.
         let nuts = parse_cards("As Ks").unwrap();
         let junk = parse_cards("7c 2d").unwrap();
-        let vn = alt[combo_index(nuts[0], nuts[1])];
-        let vj = alt[combo_index(junk[0], junk[1])];
+        let vn = alt[Hole::new(nuts[0], nuts[1]).unwrap().index()];
+        let vj = alt[Hole::new(junk[0], junk[1]).unwrap().index()];
         assert!(
             vn > vj + 100.0,
             "royal's carried CFV must dominate junk's: {vn} vs {vj}"

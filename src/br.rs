@@ -18,7 +18,7 @@
 
 use crate::abstraction::{AbsAction, Token};
 use crate::bot::Policy;
-use crate::cards::{fresh_deck, Card};
+use crate::cards::{fresh_deck, Card, Hole};
 use crate::engine::{Hand, HandConfig, Street};
 use crate::eval::{eval_hole_board, HandValue};
 use crate::lbr::{BotRange, Lbr};
@@ -33,7 +33,7 @@ use rayon::prelude::*;
 /// decision, against a fixed blueprint policy with a tracked range.
 pub struct SubgameBr<'a> {
     policy: &'a Policy,
-    combos: Vec<[Card; 2]>,
+    combos: Vec<Hole>,
     hero_seat: usize,
     bot_seat: usize,
     /// Candidate river cards (empty when the board is already complete).
@@ -70,14 +70,14 @@ impl SubgameBr<'_> {
         for &c in &board {
             on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
+        let valid = |c: &Hole| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut rivers = Vec::new();
         let mut rank = Vec::new();
         let mut sorted = Vec::new();
         let mut bucket_river = Vec::new();
 
-        let bucket_for = |combo: &[Card; 2], b: &[Card], ci: usize| -> u16 {
+        let bucket_for = |combo: &Hole, b: &[Card], ci: usize| -> u16 {
             let mut rng = SmallRng::seed_from_u64(0x1B12_5EED ^ ci as u64);
             policy.abs.bucket(*combo, b, &mut rng)
         };
@@ -144,8 +144,8 @@ impl SubgameBr<'_> {
     /// tracked range `bot_range` and the table history `hist`. Returns the
     /// argmax action and its exact expected value (net chips from here on,
     /// normalized by the bot's compatible range mass).
-    pub fn action(&self, h: &Hand, hist: &[Token], hole: [Card; 2], bot_range: &[f64]) -> (AbsAction, f64) {
-        let hero_ci = crate::search::combo_index(hole[0], hole[1]);
+    pub fn action(&self, h: &Hand, hist: &[Token], hole: Hole, bot_range: &[f64]) -> (AbsAction, f64) {
+        let hero_ci = hole.index();
         let mut blocked = [false; 52];
         blocked[hole[0].index()] = true;
         blocked[hole[1].index()] = true;
@@ -434,7 +434,7 @@ pub fn run_br(
             deck.shuffle(&mut rng);
             let mut table = crate::table::Table::new(cfg, button, deck);
             let mut range = BotRange::new();
-            range.exclude(&combos, &table.real.hole(probe_seat));
+            range.exclude(&combos, &table.real.hole(probe_seat)[..]);
             // With `search`, the bot resolves postflop decisions online
             // (the probe's range model of the bot stays the blueprint).
             let mut tracker = search.map(|_| crate::search::RangeTracker::new(n));

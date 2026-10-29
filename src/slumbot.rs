@@ -17,7 +17,7 @@
 
 use crate::abstraction::AbsAction;
 use crate::bot::{Policy, SearchParams, SearchSession};
-use crate::cards::{card_names, hole_cards, Card};
+use crate::cards::{card_names, hole_cards, Card, Hole};
 use crate::cfr::TrainConfig;
 use crate::engine::{HandConfig, PlayerAction, Players, Stack};
 use crate::search::RangeTracker;
@@ -78,7 +78,7 @@ pub struct Reply {
 struct Deal {
     client_pos: ClientPos,
     #[serde(deserialize_with = "hole_cards")]
-    hole_cards: [Card; 2],
+    hole_cards: Hole,
 }
 
 pub(crate) fn board<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Card>, D::Error> {
@@ -350,7 +350,7 @@ impl HandState {
         let table = Table::new(&cfg, client_pos.button(), deck);
         let mut tracker = RangeTracker::new(2).with_widening();
         // The bot can't hold our cards.
-        tracker.set_weight(1, [holes[0], holes[1]], 0.0);
+        tracker.set_weight(1, holes, 0.0);
         Ok(HandState {
             table,
             tracker,

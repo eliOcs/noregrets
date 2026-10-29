@@ -308,6 +308,7 @@ pub fn run_eval_aivat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cards::Hole;
     use crate::engine::{Players, Stack};
     use crate::abstraction::{AbsConfig, Abstraction};
     use crate::cards::parse_cards;
@@ -376,7 +377,7 @@ mod tests {
         let deck = fresh_deck();
         let want = parse_cards("Ah Kd").unwrap();
         let h = alt_hand(&cfg, 0, deck, &[(4, want[0]), (5, want[1])], &[]);
-        assert_eq!(h.hole(2), [want[0], want[1]]);
+        assert_eq!(h.hole(2), Hole::new(want[0], want[1]).unwrap());
         // Full deck still a permutation: every card seen exactly once across
         // holes of all players (12 cards) — spot-check no duplicates.
         let mut seen = [false; 52];

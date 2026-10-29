@@ -14,7 +14,7 @@
 //! (`Policy::search_dist`) from ranges rebuilt by replaying the request.
 
 use crate::bot::{Policy, SearchParams};
-use crate::cards::{card_names, hole_cards, Card};
+use crate::cards::{card_names, hole_cards, Card, Hole};
 use crate::cfr::TrainConfig;
 use crate::engine::{HandConfig, PlayerAction, Players, Stack, Street};
 use crate::mirror::{Bot, Mirror, Source};
@@ -62,7 +62,7 @@ pub struct Request {
     /// The seat to act; must match the replayed hand.
     pub seat: usize,
     #[serde(deserialize_with = "hole_cards")]
-    pub hole: [Card; 2],
+    pub hole: Hole,
     #[serde(deserialize_with = "card_names")]
     pub board: Vec<Card>,
     pub actions: Vec<Act>,
@@ -79,7 +79,7 @@ pub struct Spot {
     button: usize,
     stacks: Vec<Stack>,
     seat: usize,
-    hole: [Card; 2],
+    hole: Hole,
     board: Vec<Card>,
     actions: Vec<Act>,
 }
@@ -396,7 +396,7 @@ mod tests {
             button: 0,
             stacks: vec![Stack::new(stacks).unwrap(); 6],
             seat,
-            hole: hole.map(|c| c.parse().unwrap()),
+            hole: Hole::try_from(hole.map(|c| c.parse().unwrap())).unwrap(),
             board: board.iter().map(|c| c.parse().unwrap()).collect(),
             actions,
         }
@@ -429,7 +429,7 @@ mod tests {
         let h = Hand::new(&cfg(), 0, s.deck());
         let menu = bot(StrategyMap::default()).abs.abstract_actions(&h).len();
         let mut map = StrategyMap::default();
-        map.insert(make_key(preflop_bucket(cards), &[]).to_vec(), weights(menu));
+        map.insert(make_key(preflop_bucket(*cards), &[]).to_vec(), weights(menu));
         bot(map)
     }
 
@@ -521,7 +521,7 @@ mod tests {
         let p = bot(StrategyMap::default());
         let err = |req: Request| Spot::new(req, Players::SIX).and_then(|s| decide(&p, &cfg(), &s)).unwrap_err();
         assert!(err(request(STACK, 4, ["Ah", "Kd"], &[], vec![])).contains("seat 3 is to act"));
-        assert!(err(request(STACK, UTG, ["Ah", "Ah"], &[], vec![])).contains("twice"));
+        assert!(err(request(STACK, UTG, ["Ah", "Kd"], &["Ah", "3c", "4c"], vec![])).contains("twice"));
         assert!(err(request(STACK, UTG, ["Ah", "Kd"], &["2c", "3c", "4c"], vec![])).contains("board"));
         assert!(err(request(STACK, UTG, ["Ah", "Kd"], &["2c", "3c"], vec![])).contains("0, 3, 4 or 5"));
         assert!(err(request(STACK, UTG, ["Ah", "Kd"], &[], vec![Act::Raise { to: 150 }])).contains("outside"));
@@ -662,6 +662,9 @@ mod tests {
         let (id, e) = read_request(&line(r#"["Ah"]"#), Players::SIX).unwrap_err();
         assert_eq!(id, Some(7));
         assert!(e.contains("two hole cards"), "{e}");
+        let (id, e) = read_request(&line(r#"["Ah","Ah"]"#), Players::SIX).unwrap_err();
+        assert_eq!(id, Some(7));
+        assert!(e.contains("card Ah appears twice"), "{e}");
         let (id, e) = read_request(&line(r#"["Ah","Kd"]"#), Players::new(5).unwrap()).unwrap_err();
         assert_eq!(id, Some(7));
         assert!(e.contains("expected 5 stacks"), "{e}");

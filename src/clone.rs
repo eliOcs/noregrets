@@ -12,7 +12,7 @@
 //! buckets (and serialized centroids) line up at train and play time.
 
 use crate::abstraction::Abstraction;
-use crate::cards::{hole_cards, Card};
+use crate::cards::{hole_cards, Card, Hole};
 use crate::cfr::{make_key, Blueprint, StrategyMap};
 use crate::engine::{HandConfig, PlayerAction, Players};
 use crate::slumbot::{board, parse_incr, ClientPos, SlumAct, STACK};
@@ -46,9 +46,9 @@ pub struct CloneStats {
 struct LoggedHand {
     client_pos: ClientPos,
     #[serde(rename = "hole_cards", deserialize_with = "hole_cards")]
-    our: [Card; 2],
+    our: Hole,
     #[serde(rename = "bot_hole_cards", deserialize_with = "hole_cards")]
-    bot: [Card; 2],
+    bot: Hole,
     #[serde(default, deserialize_with = "board")]
     board: Vec<Card>,
     #[serde(default)]
@@ -111,7 +111,7 @@ fn replay_hand(hand: &LoggedHand, abs: &Abstraction) -> Result<Vec<Decision>, St
                 .iter()
                 .position(|&a| a == abs_a)
                 .ok_or("mapped action not on menu")?;
-            let bucket = abs.bucket([bot[0], bot[1]], table.shadow.board(), &mut rng);
+            let bucket = abs.bucket(*bot, table.shadow.board(), &mut rng);
             out.push(Decision {
                 key: make_key(bucket, &table.hist),
                 act_ix,

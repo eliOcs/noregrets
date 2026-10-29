@@ -3,7 +3,7 @@
 //! turn hands from scratch and compares them with the table.
 
 use crate::abstraction::{canonical_cards_key, Abstraction, BucketTable};
-use crate::cards::fresh_deck;
+use crate::cards::{fresh_deck, Hole};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -21,9 +21,10 @@ pub fn run(table: &BucketTable, hands: u64, seed: u64) -> [(u64, u64); 2] {
             let mut deck = fresh_deck();
             deck.shuffle(&mut rng);
             let street = (i % 2) as usize;
-            let (hole, board) = ([deck[0], deck[1]], &deck[2..5 + street]);
+            let hole = Hole::new(deck[0], deck[1]).expect("a shuffled deck holds each card once");
+            let board = &deck[2..5 + street];
             let got = abs.bucket(hole, board, &mut rng);
-            let key = canonical_cards_key(hole, board);
+            let key = canonical_cards_key(*hole, board);
             (street, want[&key] != got)
         })
         .collect();

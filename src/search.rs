@@ -10,7 +10,7 @@
 //! ingredient.
 
 use crate::abstraction::{AbsAction, Abstraction, Token};
-use crate::cards::Card;
+use crate::cards::{Card, Hole};
 use crate::engine::{Hand, MAX_PLAYERS};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -28,17 +28,12 @@ const OBS_FLOOR: f64 = 0.02;
 const HARD_FLOOR: f64 = 1e-3;
 
 #[inline]
-pub fn combo_index(a: Card, b: Card) -> usize {
-    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-    hi.index() * (hi.index() - 1) / 2 + lo.index()
-}
-
-/// All 1326 combos, indexed by `combo_index`.
-pub fn all_combos() -> Vec<[Card; 2]> {
+/// All 1326 combos, indexed by `Hole::index`.
+pub fn all_combos() -> Vec<Hole> {
     let mut v = Vec::with_capacity(NUM_COMBOS);
     for (h, &hi) in Card::ALL.iter().enumerate() {
         for &lo in &Card::ALL[..h] {
-            v.push([lo, hi]);
+            v.push(Hole::new(lo, hi).expect("cards below hi differ from it"));
         }
     }
     v
@@ -50,7 +45,7 @@ const WIDEN_TARGET: f64 = 0.02;
 
 pub struct RangeTracker {
     n: usize,
-    combos: Vec<[Card; 2]>,
+    combos: Vec<Hole>,
     /// weights[seat][combo]; unnormalized.
     weights: Vec<Vec<f64>>,
     /// The same observations with `HARD_FLOOR` and no widening.
@@ -122,14 +117,14 @@ impl RangeTracker {
     }
 
     /// Overwrite one combo's weight for a seat.
-    pub fn set_weight(&mut self, seat: usize, hole: [Card; 2], w: f64) {
-        self.weights[seat][combo_index(hole[0], hole[1])] = w;
-        self.hard[seat][combo_index(hole[0], hole[1])] = w;
+    pub fn set_weight(&mut self, seat: usize, hole: Hole, w: f64) {
+        self.weights[seat][hole.index()] = w;
+        self.hard[seat][hole.index()] = w;
     }
 
     /// Sample a hole for `seat` from its near-hard weights, avoiding (and
     /// then marking) `used` cards. None when no compatible combo is left.
-    pub fn sample_hard(&self, seat: usize, used: &mut [bool; 52], rng: &mut SmallRng) -> Option<[Card; 2]> {
+    pub fn sample_hard(&self, seat: usize, used: &mut [bool; 52], rng: &mut SmallRng) -> Option<Hole> {
         let w = &self.hard[seat];
         let ok = |ci: usize| w[ci] > 0.0 && !used[self.combos[ci][0].index()] && !used[self.combos[ci][1].index()];
         let total: f64 = (0..NUM_COMBOS).filter(|&ci| ok(ci)).map(|ci| w[ci]).sum();
@@ -152,19 +147,19 @@ impl RangeTracker {
     }
 
     /// Raw (unnormalized) weights over all 1326 combos for a seat, indexed
-    /// by `combo_index`. Feeds the river range-vector solver.
+    /// by `Hole::index`. Feeds the river range-vector solver.
     pub fn seat_weights(&self, seat: usize) -> &[f64] {
         &self.weights[seat]
     }
 
     #[cfg(test)]
-    pub fn weight(&self, seat: usize, hole: [Card; 2]) -> f64 {
-        self.weights[seat][combo_index(hole[0], hole[1])]
+    pub fn weight(&self, seat: usize, hole: Hole) -> f64 {
+        self.weights[seat][hole.index()]
     }
 
     /// Normalized probability of `hole` in `seat`'s tracked range.
     #[cfg(test)]
-    pub fn prob(&self, seat: usize, hole: [Card; 2]) -> f64 {
+    pub fn prob(&self, seat: usize, hole: Hole) -> f64 {
         let total: f64 = self.weights[seat].iter().sum();
         if total <= 0.0 {
             return 0.0;
@@ -246,8 +241,8 @@ impl RangeTracker {
         &self,
         h: &Hand,
         rng: &mut SmallRng,
-    ) -> [Option<[Card; 2]>; MAX_PLAYERS] {
-        let mut out: [Option<[Card; 2]>; MAX_PLAYERS] = [None; MAX_PLAYERS];
+    ) -> [Option<Hole>; MAX_PLAYERS] {
+        let mut out: [Option<Hole>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         let mut used = [false; 52];
         for &c in h.board() {
             used[c.index()] = true;
@@ -336,8 +331,8 @@ mod tests {
         let seat = 3;
         let taken = acts[raise_idx];
         t.observe(seat, taken, &h, &[], &bp, &abs);
-        let aa_w = t.weight(seat, parse_cards("As Ah").map(|c| [c[0], c[1]]).unwrap());
-        let junk_w = t.weight(seat, parse_cards("7c 2d").map(|c| [c[0], c[1]]).unwrap());
+        let aa_w = t.weight(seat, parse_cards("As Ah").map(|c| Hole::new(c[0], c[1]).unwrap()).unwrap());
+        let junk_w = t.weight(seat, parse_cards("7c 2d").map(|c| Hole::new(c[0], c[1]).unwrap()).unwrap());
         let ratio = aa_w / junk_w;
         assert!(ratio > 1.5, "AA must still be favored, got ratio {ratio}");
         assert!(
@@ -347,13 +342,13 @@ mod tests {
     }
 
     #[test]
-    fn combo_index_is_a_bijection() {
+    fn hole_index_is_a_bijection() {
         let combos = all_combos();
         assert_eq!(combos.len(), NUM_COMBOS);
         let mut seen = HashSet::new();
         for (i, c) in combos.iter().enumerate() {
-            assert_eq!(combo_index(c[0], c[1]), i);
-            assert_eq!(combo_index(c[1], c[0]), i);
+            assert_eq!(c.index(), i);
+            assert_eq!(Hole::new(c[1], c[0]).unwrap().index(), i);
             assert!(seen.insert(i));
         }
     }
@@ -364,9 +359,9 @@ mod tests {
         let board = parse_cards("As Kd 2c").unwrap();
         t.exclude(&board);
         let ak = parse_cards("As Qh").unwrap();
-        assert_eq!(t.weight(0, [ak[0], ak[1]]), 0.0);
+        assert_eq!(t.weight(0, Hole::new(ak[0], ak[1]).unwrap()), 0.0);
         let ok = parse_cards("Ah Qh").unwrap();
-        assert!(t.weight(1, [ok[0], ok[1]]) > 0.0);
+        assert!(t.weight(1, Hole::new(ok[0], ok[1]).unwrap()) > 0.0);
     }
 
     /// After watching a seat take the "raise" action under a blueprint where
@@ -407,8 +402,8 @@ mod tests {
 
         let aa_combo = parse_cards("As Ah").unwrap();
         let junk = parse_cards("7c 2d").unwrap();
-        let p_aa = t.prob(3, [aa_combo[0], aa_combo[1]]);
-        let p_junk = t.prob(3, [junk[0], junk[1]]);
+        let p_aa = t.prob(3, Hole::new(aa_combo[0], aa_combo[1]).unwrap());
+        let p_junk = t.prob(3, Hole::new(junk[0], junk[1]).unwrap());
         // Widening is off by default (self-play trackers face literal
         // blueprint opponents), so hard Bayes concentration holds here.
         assert!(
@@ -416,7 +411,7 @@ mod tests {
             "AA must dominate after a raise: p_aa={p_aa:.5} p_junk={p_junk:.5}"
         );
         // Unobserved seat stays uniform.
-        assert!((t.prob(4, [aa_combo[0], aa_combo[1]]) - 1.0 / NUM_COMBOS as f64).abs() < 1e-9);
+        assert!((t.prob(4, Hole::new(aa_combo[0], aa_combo[1]).unwrap()) - 1.0 / NUM_COMBOS as f64).abs() < 1e-9);
     }
 
     #[test]
@@ -433,7 +428,7 @@ mod tests {
         let mut t = RangeTracker::new(3);
         // Force seat 0 and seat 1 onto the SAME single combo; only one can get it.
         let combo = parse_cards("As Ah").unwrap();
-        let target = combo_index(combo[0], combo[1]);
+        let target = Hole::new(combo[0], combo[1]).unwrap().index();
         for seat in 0..2 {
             for ci in 0..NUM_COMBOS {
                 t.weights[seat][ci] = if ci == target { 1.0 } else { 0.0 };
@@ -443,7 +438,7 @@ mod tests {
             let holes = t.sample_holes(&h, &mut rng);
             // Exactly one of the two seats gets the combo; the other falls back.
             let got: Vec<bool> = (0..2)
-                .map(|s| holes[s].map(|w| combo_index(w[0], w[1])) == Some(target))
+                .map(|s| holes[s].map(Hole::index) == Some(target))
                 .collect();
             assert_eq!(got.iter().filter(|&&g| g).count(), 1);
             // Seat 2 (uniform) gets some combo not colliding with seat 0/1.

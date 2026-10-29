@@ -6,7 +6,7 @@
 //! - Side pots: a short stack can only win chips it covered.
 //! - Min-raise rules, big-blind option, heads-up blind order.
 
-use crate::cards::Card;
+use crate::cards::{Card, Hole};
 use crate::eval::{eval_hole_board, HandValue};
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -221,7 +221,7 @@ pub struct Hand {
     n: usize,
     button: usize,
     bb: u32,
-    holes: [[Card; 2]; MAX_PLAYERS],
+    holes: [Hole; MAX_PLAYERS],
     board: [Card; 5],
     board_len: usize,
     deck: [Card; 52],
@@ -256,10 +256,9 @@ impl Hand {
         assert_eq!(stacks.len(), n);
         assert!(button < n);
 
-        let mut holes = [[Card::FILL; 2]; MAX_PLAYERS];
+        let mut holes = [Hole::FILL; MAX_PLAYERS];
         for (p, hole) in holes.iter_mut().enumerate().take(n) {
-            hole[0] = deck[2 * p];
-            hole[1] = deck[2 * p + 1];
+            *hole = Hole::new(deck[2 * p], deck[2 * p + 1]).expect("a deck holds each card once");
         }
 
         let mut h = Hand {
@@ -435,7 +434,7 @@ impl Hand {
         let mut next = 0;
         for p in 0..self.n {
             if Some(p) != keep {
-                self.holes[p] = [unseen[next], unseen[next + 1]];
+                self.holes[p] = Hole::new(unseen[next], unseen[next + 1]).expect("unseen cards differ");
                 next += 2;
             }
         }
@@ -452,7 +451,7 @@ impl Hand {
     /// Requested combos must be distinct and off the dealt board.
     pub fn resample_hidden_with(
         &mut self,
-        want: &[Option<[Card; 2]>; MAX_PLAYERS],
+        want: &[Option<Hole>; MAX_PLAYERS],
         rng: &mut SmallRng,
     ) {
         let mut used = [false; 52];
@@ -460,7 +459,7 @@ impl Hand {
             used[c.index()] = true;
         }
         for w in want.iter().take(self.n).flatten() {
-            for &c in w {
+            for &c in w.iter() {
                 debug_assert!(!used[c.index()], "requested card already in use");
                 used[c.index()] = true;
             }
@@ -477,7 +476,7 @@ impl Hand {
             match w {
                 Some(w) => self.holes[p] = *w,
                 None => {
-                    self.holes[p] = [unseen[next], unseen[next + 1]];
+                    self.holes[p] = Hole::new(unseen[next], unseen[next + 1]).expect("unseen cards differ");
                     next += 2;
                 }
             }
@@ -626,7 +625,7 @@ impl Hand {
     pub fn board(&self) -> &[Card] {
         &self.board[..self.board_len]
     }
-    pub fn hole(&self, p: usize) -> [Card; 2] {
+    pub fn hole(&self, p: usize) -> Hole {
         self.holes[p]
     }
     pub fn is_terminal(&self) -> bool {
@@ -984,12 +983,12 @@ mod tests {
         let (w1, w2) = ([free[0], free[1]], [free[2], free[3]]);
 
         for _ in 0..50 {
-            let mut want: [Option<[Card; 2]>; MAX_PLAYERS] = [None; MAX_PLAYERS];
-            want[1] = Some(w1);
-            want[4] = Some(w2);
+            let mut want: [Option<Hole>; MAX_PLAYERS] = [None; MAX_PLAYERS];
+            want[1] = Some(Hole::try_from(w1).unwrap());
+            want[4] = Some(Hole::try_from(w2).unwrap());
             h.resample_hidden_with(&want, &mut rng);
-            assert_eq!(h.hole(1), w1);
-            assert_eq!(h.hole(4), w2);
+            assert_eq!(h.hole(1), Hole::try_from(w1).unwrap());
+            assert_eq!(h.hole(4), Hole::try_from(w2).unwrap());
             assert_eq!(h.board(), &board_before[..]);
             let mut seen = std::collections::HashSet::new();
             for p in 0..6 {

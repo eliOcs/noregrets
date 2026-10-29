@@ -16,7 +16,7 @@
 //! raise to BET_SIZES[N] of the pot, `a` all-in.
 
 use crate::abstraction::{AbsAction, Abstraction, BetSize, Token};
-use crate::cards::{fresh_deck, Card, Rank, Suit};
+use crate::cards::{fresh_deck, Card, Hole, Rank, Suit};
 use crate::cfr::sample_index;
 use crate::engine::{Hand, HandConfig, Street};
 use crate::mirror::Bot;
@@ -106,7 +106,7 @@ pub fn class_name(hi: Rank, lo: Rank, suited: bool) -> String {
 }
 
 /// Every combo of a class like "KK", "AKs" or "AKo".
-pub fn class_combos(name: &str) -> Result<Vec<[Card; 2]>, String> {
+pub fn class_combos(name: &str) -> Result<Vec<Hole>, String> {
     let chars: Vec<char> = name.chars().collect();
     let r = Rank::from_char;
     let bad = || format!("bad hand class '{name}' (e.g. KK, AKs, AKo)");
@@ -125,7 +125,7 @@ pub fn class_combos(name: &str) -> Result<Vec<[Card; 2]>, String> {
                 _ => return Err(bad()),
             };
             if ok {
-                out.push([Card::new(a, s1), Card::new(b, s2)]);
+                out.push(Hole::new(Card::new(a, s1), Card::new(b, s2)).expect("a class names two different cards"));
             }
         }
     }
@@ -185,7 +185,7 @@ pub fn probe(bot: &Bot, cfg: &HandConfig, line: &str) -> Result<Probe, String> {
         let cs = class_combos(&name)?;
         // Preflop buckets depend on the class only.
         let mut deck = fresh_deck();
-        place(&mut deck, hero, cs[0]);
+        place(&mut deck, hero, *cs[0]);
         let n = node(cfg, &bot.abs, line, deck)?;
         let (_, p, _) = dist(bot, &n.hand, &n.hist, &mut rng);
         if let Some(i) = all_in_at {
@@ -281,7 +281,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
             let mut rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let mut deck = fresh_deck();
             deck.shuffle(&mut rng);
-            place(&mut deck, hero, combos[rng.random_range(0..combos.len())]);
+            place(&mut deck, hero, *combos[rng.random_range(0..combos.len())]);
             let n = node(cfg, &bot.abs, line, deck).expect("line checked above");
             // Reach of the line for everyone but the hero, whose own reach
             // is the same for every combo of the class.
@@ -321,7 +321,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
         .collect();
     let mut rng = SmallRng::seed_from_u64(0);
     let mut deck = fresh_deck();
-    place(&mut deck, hero, combos[0]);
+    place(&mut deck, hero, *combos[0]);
     let nh = node(cfg, &bot.abs, line, deck)?;
     let (_, mix, _) = dist(bot, &nh.hand, &nh.hist, &mut rng);
     let mut hero_reach = 1.0;

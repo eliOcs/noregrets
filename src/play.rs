@@ -42,7 +42,7 @@ pub fn play(policy: &Policy, opts: &PlayOpts) {
         let mut table = Table::new(&opts.cfg, button, deck);
 
         println!("=== Hand #{hand_no} — button: {} ===", seat_name(button));
-        println!("Your cards: {}", cards_str(&table.real.hole(HUMAN)));
+        println!("Your cards: {}", cards_str(&table.real.hole(HUMAN)[..]));
 
         // Tracked ranges for every seat, Bayes-updated on each action; feeds
         // the bots' range-aware subgame search.
@@ -122,7 +122,7 @@ pub fn play(policy: &Policy, opts: &PlayOpts) {
         }
         for p in 0..n {
             if !table.real.folded(p) && table.real.live_count() > 1 && p != HUMAN {
-                println!("  {} shows {}", seat_name(p), cards_str(&table.real.hole(p)));
+                println!("  {} shows {}", seat_name(p), cards_str(&table.real.hole(p)[..]));
             }
         }
         let bb = opts.cfg.blinds.bb() as f64;

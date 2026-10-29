@@ -1214,7 +1214,7 @@ fn main() {
                     let n = preflop::node(&cfg, &trainer.abs, line, cards::fresh_deck()).unwrap_or_else(|e| die(&e));
                     for class in report_hands.split(',') {
                         let combo = preflop::class_combos(class).unwrap_or_else(|e| die(&e))[0];
-                        let b = abstraction::preflop_bucket(combo);
+                        let b = abstraction::preflop_bucket(*combo);
                         let f = |v: Option<Vec<f64>>| {
                             v.map_or("unvisited".to_string(), |v| {
                                 v.iter().map(|x| format!("{:>4.0}", 100.0 * x)).collect::<Vec<_>>().join("")

@@ -395,6 +395,7 @@ mod tests {
     #[test]
     fn bucketing_reads_the_embedded_table_for_every_suit_variant() {
         use crate::abstraction::{canonical_cards_key, Abstraction};
+        use crate::cards::Hole;
         // A deliberately wrong bucket shows the table, not Monte Carlo,
         // answered: hole 2c 3d, board 4h 7c 9h, and the same with clubs and
         // diamonds swapped.
@@ -403,8 +404,8 @@ mod tests {
         let bp = roundtrip_with(&blueprint(100, 7), "abs", Some(&table(vec![(canonical_cards_key(hole, &board), 11)])));
         let abs = Abstraction::with_centroids(AbsConfig::default(), None).with_table(bp.bucket_table().unwrap());
         let mut rng = SmallRng::seed_from_u64(8);
-        assert_eq!(abs.bucket(hole, &board, &mut rng), 11);
-        assert_eq!(abs.bucket([c("2d"), c("3c")], &[c("4h"), c("7d"), c("9h")], &mut rng), 11);
+        assert_eq!(abs.bucket(Hole::try_from(hole).unwrap(), &board, &mut rng), 11);
+        assert_eq!(abs.bucket(Hole::try_from([c("2d"), c("3c")]).unwrap(), &[c("4h"), c("7d"), c("9h")], &mut rng), 11);
         assert_eq!(abs.canon_len(), 0, "table hits are not copied into the cache");
     }
 

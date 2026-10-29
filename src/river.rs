@@ -14,11 +14,11 @@
 //! to it.
 
 use crate::abstraction::{AbsAction, Abstraction};
-use crate::cards::Card;
+use crate::cards::{Card, Hole};
 use crate::cfr::qre_distribution;
 use crate::engine::Hand;
 use crate::eval::{eval_hole_board, HandValue};
-use crate::search::{all_combos, combo_index, NUM_COMBOS};
+use crate::search::{all_combos, NUM_COMBOS};
 
 enum Kid {
     Node(usize),
@@ -60,7 +60,7 @@ struct Gadget {
 }
 
 pub struct RiverSolver {
-    combos: Vec<[Card; 2]>,
+    combos: Vec<Hole>,
     /// Initial (unnormalized) range per solver player, board conflicts zeroed.
     range: [Vec<f64>; 2],
     /// Combo indices sorted by river hand rank; invalid combos excluded.
@@ -78,7 +78,7 @@ pub struct RiverSolver {
 impl RiverSolver {
     /// Build the river tree from a decision point `h` (river, exactly two
     /// live players, `h.to_act()` becomes solver player 0). `ranges` are the
-    /// tracked weights (indexed by `combo_index`) for [to_act, other].
+    /// tracked weights (indexed by `Hole::index`) for [to_act, other].
     pub fn build(h: &Hand, abs: &Abstraction, ranges: [&[f64]; 2]) -> Option<RiverSolver> {
         if h.board().len() != 5 || h.live_count() != 2 {
             return None;
@@ -93,7 +93,7 @@ impl RiverSolver {
         for &c in &board {
             on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
+        let valid = |c: &Hole| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut range = [vec![0.0; NUM_COMBOS], vec![0.0; NUM_COMBOS]];
         for (pi, r) in range.iter_mut().enumerate() {
@@ -252,7 +252,7 @@ impl RiverSolver {
         max_iters: u64,
         time_ms: u64,
         qre_lambda: Option<f64>,
-        hole: [Card; 2],
+        hole: Hole,
         threshold: f64,
     ) -> bool {
         const PROBE_FRAC: u64 = 8;
@@ -450,11 +450,11 @@ impl RiverSolver {
 
     /// Average strategy at the root for solver player 0's `hole`, aligned
     /// with the root's action list. None if the combo never got weight.
-    pub fn root_strategy(&self, hole: [Card; 2]) -> Option<(Vec<AbsAction>, Vec<f64>)> {
+    pub fn root_strategy(&self, hole: Hole) -> Option<(Vec<AbsAction>, Vec<f64>)> {
         let node = &self.nodes[self.root()];
         debug_assert_eq!(node.player, 0);
         let n_acts = node.acts.len();
-        let ci = combo_index(hole[0], hole[1]);
+        let ci = hole.index();
         let s = &node.strat[ci * n_acts..(ci + 1) * n_acts];
         let total: f64 = s.iter().sum();
         if total <= 0.0 {
@@ -656,7 +656,7 @@ impl RiverSolver {
 /// aggregate `reach_opp` overall and per card.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn showdown_sweep(
-    combos: &[[Card; 2]],
+    combos: &[Hole],
     sorted: &[u32],
     rank: &[Option<HandValue>],
     reach_opp: &[f64],
@@ -833,7 +833,7 @@ mod tests {
         // king-high straight flush) is the effective nuts — and we can query
         // ANY combo, that's the point of range-vector solving.
         let nuts = parse_cards("Ks 9s").unwrap();
-        let (acts, s) = solver.root_strategy([nuts[0], nuts[1]]).unwrap();
+        let (acts, s) = solver.root_strategy(Hole::new(nuts[0], nuts[1]).unwrap()).unwrap();
         assert_eq!(acts[0], AbsAction::Fold);
         assert!(
             s[1] > 0.95,
@@ -843,7 +843,7 @@ mod tests {
         );
 
         let air = parse_cards("2d 6h").unwrap(); // six-high, no pair
-        let (_, s_air) = solver.root_strategy([air[0], air[1]]).unwrap();
+        let (_, s_air) = solver.root_strategy(Hole::new(air[0], air[1]).unwrap()).unwrap();
         assert!(
             s_air[0] > 0.7,
             "worthless hand should usually fold, got {:?}",
@@ -881,7 +881,7 @@ mod tests {
         let nuts = parse_cards("Ks 9s").unwrap();
 
         let mut quick = RiverSolver::build(&h, &abs, [&uni, &uni]).unwrap();
-        let early = quick.solve_adaptive(400, 60_000, None, [nuts[0], nuts[1]], 0.97);
+        let early = quick.solve_adaptive(400, 60_000, None, Hole::new(nuts[0], nuts[1]).unwrap(), 0.97);
         assert!(early, "nuts facing a shove must be settled by the probe");
         assert!(
             quick.iterations() < 100,
@@ -890,11 +890,11 @@ mod tests {
         );
 
         let mut full = RiverSolver::build(&h, &abs, [&uni, &uni]).unwrap();
-        let early = full.solve_adaptive(400, 60_000, None, [nuts[0], nuts[1]], 1.01);
+        let early = full.solve_adaptive(400, 60_000, None, Hole::new(nuts[0], nuts[1]).unwrap(), 1.01);
         assert!(!early, "impossible threshold can never exit early");
         assert_eq!(full.iterations(), 400, "must run the full budget");
         // Same action either way.
-        let (_, s) = quick.root_strategy([nuts[0], nuts[1]]).unwrap();
+        let (_, s) = quick.root_strategy(Hole::new(nuts[0], nuts[1]).unwrap()).unwrap();
         assert!(s[1] > 0.9, "probe solve already calls: {s:?}");
     }
 

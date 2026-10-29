@@ -13,11 +13,11 @@
 //! a fixed sample of full runouts with the shared O(N) sweep.
 
 use crate::abstraction::{AbsAction, Abstraction, BetSize};
-use crate::cards::Card;
+use crate::cards::{Card, Hole};
 use crate::engine::{Hand, Street};
 use crate::eval::{eval_hole_board, HandValue};
 use crate::river::showdown_sweep;
-use crate::search::{all_combos, combo_index, NUM_COMBOS};
+use crate::search::{all_combos, NUM_COMBOS};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
@@ -98,7 +98,7 @@ struct Leaf {
 }
 
 pub struct FlopSolver<'a> {
-    combos: Vec<[Card; 2]>,
+    combos: Vec<Hole>,
     range: [Vec<f64>; 2],
     /// Candidate turn cards (board conflicts excluded).
     turns: Vec<Card>,
@@ -162,7 +162,7 @@ impl<'a> FlopSolver<'a> {
         for &c in &board {
             on_board[c.index()] = true;
         }
-        let valid = |c: &[Card; 2]| !on_board[c[0].index()] && !on_board[c[1].index()];
+        let valid = |c: &Hole| !on_board[c[0].index()] && !on_board[c[1].index()];
 
         let mut range = [vec![0.0; NUM_COMBOS], vec![0.0; NUM_COMBOS]];
         for (pi, r) in range.iter_mut().enumerate() {
@@ -370,7 +370,7 @@ impl<'a> FlopSolver<'a> {
         &mut self,
         max_iters: u64,
         time_ms: u64,
-        hole: [Card; 2],
+        hole: Hole,
         threshold: f64,
     ) -> bool {
         const PROBE_FRAC: u64 = 8;
@@ -384,11 +384,11 @@ impl<'a> FlopSolver<'a> {
         false
     }
 
-    pub fn root_strategy(&self, hole: [Card; 2]) -> Option<(Vec<AbsAction>, Vec<f64>)> {
+    pub fn root_strategy(&self, hole: Hole) -> Option<(Vec<AbsAction>, Vec<f64>)> {
         let node = &self.nodes[self.root()];
         debug_assert_eq!(node.player, 0);
         let n_acts = node.acts.len();
-        let ci = combo_index(hole[0], hole[1]);
+        let ci = hole.index();
         let s = &node.strat[ci * n_acts..(ci + 1) * n_acts];
         let total: f64 = s.iter().sum();
         if total <= 0.0 {
@@ -883,11 +883,11 @@ mod tests {
         let mut s = FlopSolver::build(&h, &abs, [&uni, &uni], &[BetSize::P75], &oracle, 10).unwrap();
         s.solve(120, 120_000);
         let nuts = parse_cards("As Ks").unwrap();
-        let (acts, p) = s.root_strategy([nuts[0], nuts[1]]).unwrap();
+        let (acts, p) = s.root_strategy(Hole::new(nuts[0], nuts[1]).unwrap()).unwrap();
         assert_eq!(acts[0], AbsAction::Fold);
         assert!(p[1] > 0.9, "flopped royal must call the shove, got {p:?}");
         let v = s.root_values(0);
-        let ci = combo_index(nuts[0], nuts[1]);
+        let ci = Hole::new(nuts[0], nuts[1]).unwrap().index();
         assert!(
             (v[ci] - 2000.0).abs() < 80.0,
             "flopped royal facing shove must value ~+2000, got {}",

@@ -238,10 +238,10 @@ pub fn baseline_action(b: Baseline, h: &Hand, abs: &Abstraction, rng: &mut Small
         Baseline::Maniac => menu_bet(h, abs, true).unwrap_or(AbsAction::CheckCall),
         Baseline::Shover => all_in_or_call(h, abs),
         Baseline::PushFold if !preflop => AbsAction::CheckCall,
-        Baseline::PushFold if in_range(hole, PUSH_FOLD_RANGE) => all_in_or_call(h, abs),
+        Baseline::PushFold if in_range(*hole, PUSH_FOLD_RANGE) => all_in_or_call(h, abs),
         Baseline::PushFold => fold_or_check(h),
         Baseline::Nit if !preflop => AbsAction::CheckCall,
-        Baseline::Nit if !in_range(hole, NIT_RANGE) => fold_or_check(h),
+        Baseline::Nit if !in_range(*hole, NIT_RANGE) => fold_or_check(h),
         Baseline::Nit if h.n_raises() == 0 => menu_bet(h, abs, false).unwrap_or(AbsAction::CheckCall),
         Baseline::Nit => AbsAction::CheckCall,
     }
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn baseline_ranges_have_their_documented_sizes() {
         let combos = crate::search::all_combos();
-        let count = |r: &[&str]| combos.iter().filter(|&&c| in_range(c, r)).count();
+        let count = |r: &[&str]| combos.iter().filter(|&&c| in_range(*c, r)).count();
         assert_eq!(count(PUSH_FOLD_RANGE), 274);
         assert_eq!(count(NIT_RANGE), 82);
         assert!(in_range([crate::cards::make_card(12, 0), crate::cards::make_card(12, 1)], NIT_RANGE));

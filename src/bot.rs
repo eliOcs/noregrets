@@ -774,7 +774,7 @@ pub fn resolve_subgame(
 mod tests {
     use super::*;
     use crate::abstraction::AbsConfig;
-    use crate::cards::{fresh_deck, parse_cards, Card};
+    use crate::cards::{fresh_deck, parse_cards, Card, Hole};
     use crate::cfr::make_key;
     use crate::engine::{HandConfig, PlayerAction, Players, Stack};
     use rand::SeedableRng;
@@ -793,7 +793,7 @@ mod tests {
         let abs = abs_small();
         let h = Hand::new(&HandConfig::default(), 0, fresh_deck());
         let acts = abs.abstract_actions(&h);
-        let bucket = crate::abstraction::preflop_bucket(h.hole(3));
+        let bucket = crate::abstraction::preflop_bucket(*h.hole(3));
 
         // Blueprint that always folds at this exact infoset.
         let mut strategies = crate::cfr::StrategyMap::default();
@@ -825,7 +825,7 @@ mod tests {
         let abs = abs_small();
         let h = Hand::new(&HandConfig::default(), 0, fresh_deck());
         let acts = abs.abstract_actions(&h);
-        let bucket = crate::abstraction::preflop_bucket(h.hole(3));
+        let bucket = crate::abstraction::preflop_bucket(*h.hole(3));
 
         // Stored strategy has one FEWER action than the current menu — the
         // signature of a blueprint trained with a narrower bet menu.
@@ -1471,8 +1471,8 @@ mod tests {
         tracker.set_all(1, 0.0);
         let bluff = parse_cards("2c 2h").unwrap();
         let nuts = parse_cards("As Ks").unwrap();
-        tracker.set_weight(1, [bluff[0], bluff[1]], 0.42);
-        tracker.set_weight(1, [nuts[0], nuts[1]], 0.58);
+        tracker.set_weight(1, Hole::new(bluff[0], bluff[1]).unwrap(), 0.42);
+        tracker.set_weight(1, Hole::new(nuts[0], nuts[1]).unwrap(), 0.58);
 
         let train_cfg = TrainConfig {
             hand: hand_cfg,

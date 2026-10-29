@@ -5,7 +5,7 @@
 //! postflop Monte Carlo equity vs one random hand, quantized into buckets,
 //! memoized in a lock-free cache keyed exactly (packed cards, no hash collisions).
 
-use crate::cards::{fresh_deck, Card, Rank, Suit};
+use crate::cards::{fresh_deck, Card, Hole, Rank, Suit};
 use crate::engine::{Hand, PlayerAction, Players, Stack, Street};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
@@ -239,11 +239,11 @@ pub struct StratCtx {
 /// abstraction's buckets are, and rollouts are distributionally symmetric).
 pub fn strategic_fingerprint(
     sc: &StratCtx,
-    hole: [Card; 2],
+    hole: Hole,
     board: &[Card],
     rng: &mut SmallRng,
 ) -> Vec<f32> {
-    let (h0, hist) = standard_state(hole, board);
+    let (h0, hist) = standard_state(*hole, board);
     let acts = sc.abs.abstract_actions(&h0);
     let bucket = sc.abs.bucket(hole, board, rng);
     let mut feat: Vec<f32> = match sc.bp.get(bucket, &hist) {
@@ -259,7 +259,7 @@ pub fn strategic_fingerprint(
     let mut wins = 0u32;
     for _ in 0..sc.rollouts {
         let mut sim = h0.clone();
-        let mut want: [Option<[Card; 2]>; crate::engine::MAX_PLAYERS] =
+        let mut want: [Option<Hole>; crate::engine::MAX_PLAYERS] =
             [None; crate::engine::MAX_PLAYERS];
         want[hero] = Some(hole);
         sim.resample_hidden_with(&want, rng);
@@ -358,7 +358,7 @@ fn train_street_strategic(
                 SmallRng::seed_from_u64(seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let mut deck = fresh_deck();
             deck.shuffle(&mut rng);
-            let hole = [deck[0], deck[1]];
+            let hole = Hole::new(deck[0], deck[1]).expect("a shuffled deck holds each card once");
             let board = deck[2..2 + board_len].to_vec();
             strategic_fingerprint(sc, hole, &board, &mut rng)
         })
@@ -448,7 +448,7 @@ impl Abstraction {
         for street_len in [3usize, 4] {
             // Representatives: pairs whose identity-permutation key is
             // already the canonical (minimal) key.
-            let reps: Vec<([Card; 2], Vec<Card>)> = holes
+            let reps: Vec<(Hole, Vec<Card>)> = holes
                 .par_iter()
                 .flat_map_iter(|&hole| {
                     let mut out = Vec::new();
@@ -459,7 +459,7 @@ impl Abstraction {
                     }
                     loop {
                         let board: Vec<Card> = idx.iter().map(|&i| rest[i]).collect();
-                        if identity_key(hole, &board) == canonical_cards_key(hole, &board) {
+                        if identity_key(*hole, &board) == canonical_cards_key(*hole, &board) {
                             out.push((hole, board));
                         }
                         // next combination
@@ -620,19 +620,19 @@ impl Abstraction {
     /// Flop/turn: nearest EMD k-medians centroid of the equity distribution
     /// over future runouts (falls back to quantized raw equity without
     /// centroids). River: quantized MC equity vs one uniform random hand.
-    pub fn bucket(&self, hole: [Card; 2], board: &[Card], rng: &mut SmallRng) -> u16 {
+    pub fn bucket(&self, hole: Hole, board: &[Card], rng: &mut SmallRng) -> u16 {
         if board.is_empty() {
-            return preflop_bucket(hole);
+            return preflop_bucket(*hole);
         }
         if board.len() == 5 && self.strat.is_none() {
             return self.river_bucket(hole, board);
         }
-        let key = pack_cards_key(hole, board);
+        let key = pack_cards_key(*hole, board);
         if let Some(b) = self.cache.get(&key) {
             return *b;
         }
         // Miss: fold suit-isomorphic variants onto one canonical entry.
-        let ckey = canonical_cards_key(hole, board);
+        let ckey = canonical_cards_key(*hole, board);
         if let Some(b) = self.table.as_ref().and_then(|t| t.get(ckey)) {
             return b;
         }
@@ -656,13 +656,14 @@ impl Abstraction {
         // stored, and a cache miss never consumes caller draws — bucketing
         // is deterministic regardless of thread timing or cache state.
         let _ = rng;
-        let (hole, cboard) = decode_cards_key(ckey);
+        let (cards, cboard) = decode_cards_key(ckey);
+        let hole = Hole::new(cards[0], cards[1]).expect("a canonical key keeps the hole cards apart");
         let board = &cboard[..board.len()];
         let mut krng = SmallRng::seed_from_u64(ckey ^ 0xD1CE_5EED_0BAD_F00D);
         let b = match street_cents {
             Some(cents) if cents.first().map(|v| v.len()) == Some(COMBINED_DIM) => {
                 let f = combined_features(
-                    hole,
+                    *hole,
                     board,
                     self.cfg.dist_runouts,
                     self.cfg.runout_rollouts,
@@ -679,7 +680,7 @@ impl Abstraction {
             }
             Some(cents) => {
                 let q = equity_quantiles(
-                    hole,
+                    *hole,
                     board,
                     self.cfg.dist_runouts,
                     self.cfg.runout_rollouts,
@@ -688,7 +689,7 @@ impl Abstraction {
                 nearest_centroid(&q, cents)
             }
             None => {
-                let eq = equity_vs_random(hole, board, self.cfg.equity_rollouts, &mut krng);
+                let eq = equity_vs_random(*hole, board, self.cfg.equity_rollouts, &mut krng);
                 ((eq * nb as f64) as u16).min(nb - 1)
             }
         };
@@ -710,7 +711,7 @@ impl Abstraction {
     /// times, so a thread-local one-slot memo skips both the 24-permutation
     /// canonicalization and the shared-map lookup on repeats, and the
     /// shared map is read-locked (get) before ever write-locking (entry).
-    fn river_bucket(&self, hole: [Card; 2], board: &[Card]) -> u16 {
+    fn river_bucket(&self, hole: Hole, board: &[Card]) -> u16 {
         debug_assert_eq!(board.len(), 5);
         // Keyed by board AND bucket count: abstractions with different
         // bucket counts coexist in one thread (blueprint lookups vs a
@@ -761,7 +762,7 @@ impl Abstraction {
             }
         };
         let map = |c: Card| permute(c, &perm);
-        table[crate::search::combo_index(map(hole[0]), map(hole[1]))]
+        table[Hole::new(map(hole[0]), map(hole[1])).expect("a suit permutation keeps cards apart").index()]
     }
 
     #[cfg(test)]
@@ -1563,11 +1564,11 @@ mod tests {
         let (rh, rb) = decode_cards_key(ckey);
         assert_eq!(canonical_cards_key(rh, &rb[..4]), ckey);
         assert_eq!(identity_key(rh, &rb[..4]), ckey, "decodes to the representative");
-        let rep = abs.bucket(rh, &rb[..4], &mut rng);
+        let rep = abs.bucket(Hole::try_from(rh).unwrap(), &rb[..4], &mut rng);
         for perm in &SUIT_PERMS {
             let map = |c: Card| permute(c, perm);
             let b: Vec<Card> = board.iter().map(|&c| map(c)).collect();
-            assert_eq!(fresh().bucket([map(hole[0]), map(hole[1])], &b, &mut rng), rep);
+            assert_eq!(fresh().bucket(Hole::try_from([map(hole[0]), map(hole[1])]).unwrap(), &b, &mut rng), rep);
         }
     }
 
@@ -1635,8 +1636,8 @@ mod tests {
         let board = parse_cards("As Kd 7c").unwrap();
         let strong = parse_cards("Ah Ac").unwrap();
         let weak = parse_cards("5h 4d").unwrap();
-        let bs = a.bucket([strong[0], strong[1]], &board, &mut rng);
-        let bw = a.bucket([weak[0], weak[1]], &board, &mut rng);
+        let bs = a.bucket(Hole::new(strong[0], strong[1]).unwrap(), &board, &mut rng);
+        let bw = a.bucket(Hole::new(weak[0], weak[1]).unwrap(), &board, &mut rng);
         assert!(bs > bw, "set must bucket above air (got {bs} vs {bw})");
     }
 
@@ -1647,14 +1648,14 @@ mod tests {
         let board = parse_cards("As Ks Qs Js 9h").unwrap();
         let nuts = parse_cards("Ts 3s").unwrap(); // royal flush
         let air = parse_cards("3d 2c").unwrap();
-        let bn = a.bucket([nuts[0], nuts[1]], &board, &mut rng);
-        let ba = a.bucket([air[0], air[1]], &board, &mut rng);
+        let bn = a.bucket(Hole::new(nuts[0], nuts[1]).unwrap(), &board, &mut rng);
+        let ba = a.bucket(Hole::new(air[0], air[1]).unwrap(), &board, &mut rng);
         assert_eq!(bn, a.cfg.postflop_buckets.get() - 1, "nuts must be top bucket");
         assert!(bn > ba);
         // Memoized: the same query (either card order) returns the same
         // bucket. River queries live in the per-board table, not the
         // pair cache.
-        let bn2 = a.bucket([nuts[1], nuts[0]], &board, &mut rng);
+        let bn2 = a.bucket(Hole::new(nuts[1], nuts[0]).unwrap(), &board, &mut rng);
         assert_eq!(bn, bn2);
         assert!(a.river_tables_len() >= 1);
     }
@@ -1664,7 +1665,7 @@ mod tests {
         let a = abs();
         let mut rng = SmallRng::seed_from_u64(3);
         let hole = [make_card(12, 0), make_card(12, 1)];
-        assert_eq!(a.bucket(hole, &[], &mut rng), preflop_bucket(hole));
+        assert_eq!(a.bucket(Hole::try_from(hole).unwrap(), &[], &mut rng), preflop_bucket(hole));
     }
 
     /// Suit-isomorphic (hole, board) pairs must canonicalize to the same key,
@@ -1702,12 +1703,12 @@ mod tests {
         let b1 = {
             let h = parse_cards("Kh Qh").unwrap();
             let b = parse_cards("Ah 7h 2c").unwrap();
-            a.bucket([h[0], h[1]], &b, &mut rng)
+            a.bucket(Hole::new(h[0], h[1]).unwrap(), &b, &mut rng)
         };
         let b2 = {
             let h = parse_cards("Ks Qs").unwrap();
             let b = parse_cards("As 7s 2d").unwrap();
-            a.bucket([h[0], h[1]], &b, &mut rng)
+            a.bucket(Hole::new(h[0], h[1]).unwrap(), &b, &mut rng)
         };
         assert_eq!(b1, b2, "isomorphic hands must share a bucket");
         assert_eq!(a.canon_len(), 1, "one canonical entry for the class");
@@ -1813,7 +1814,7 @@ mod tests {
                 }
             }
             let expect = (((num / den) * 12.0) as u16).min(11);
-            let got = abs.bucket(hole, &board, &mut rng);
+            let got = abs.bucket(Hole::try_from(hole).unwrap(), &board, &mut rng);
             assert_eq!(got, expect, "bucket mismatch for {hole_s}");
         }
     }
@@ -1836,7 +1837,7 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(1);
         let hole = [make_card(12, 0), make_card(11, 0)];
         let flop = [make_card(9, 1), make_card(3, 2), make_card(7, 0)];
-        let lazy = a.bucket(hole, &flop, &mut rng);
+        let lazy = a.bucket(Hole::try_from(hole).unwrap(), &flop, &mut rng);
         let entries = a.canon_entries();
         assert_eq!(entries.len(), 1);
         let b = Abstraction::new(cfg);
@@ -1844,7 +1845,7 @@ mod tests {
         // Same bucket for a suit-isomorphic variant, served from the table.
         let iso_hole = [make_card(12, 3), make_card(11, 3)];
         let iso_flop = [make_card(9, 2), make_card(3, 1), make_card(7, 3)];
-        assert_eq!(b.bucket(iso_hole, &iso_flop, &mut rng), lazy);
+        assert_eq!(b.bucket(Hole::try_from(iso_hole).unwrap(), &iso_flop, &mut rng), lazy);
         assert_eq!(b.canon_entries().len(), 1, "no new canonical entry was computed");
         // Representative test: canonical iff identity key is minimal.
         assert_eq!(
@@ -1865,7 +1866,7 @@ mod tests {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(2);
         let board = parse_cards("Ah Kh 7h 4d 2c").unwrap();
         let hole = parse_cards("Qh Jh").unwrap();
-        let b0 = abs.bucket([hole[0], hole[1]], &board, &mut rng);
+        let b0 = abs.bucket(Hole::new(hole[0], hole[1]).unwrap(), &board, &mut rng);
         // Swap hearts and spades, and clubs and diamonds, everywhere.
         let [c, d, h, s] = Suit::ALL;
         let swap = |x: Card| {
@@ -1878,12 +1879,12 @@ mod tests {
         };
         let board2: Vec<Card> = board.iter().map(|&c| swap(c)).collect();
         let hole2 = [swap(hole[0]), swap(hole[1])];
-        let b1 = abs.bucket(hole2, &board2, &mut rng);
+        let b1 = abs.bucket(Hole::try_from(hole2).unwrap(), &board2, &mut rng);
         assert_eq!(b0, b1, "suit relabeling must not change the bucket");
         // Sanity: a made flush is a top bucket, stone air is a low one.
         assert_eq!(b0, 11, "nut flush must be in the top bucket");
         let air = parse_cards("9c 3d").unwrap();
-        let ba = abs.bucket([air[0], air[1]], &board, &mut rng);
+        let ba = abs.bucket(Hole::new(air[0], air[1]).unwrap(), &board, &mut rng);
         assert!(ba <= 4, "nine-high air must be in a low bucket, got {ba}");
     }
 
@@ -1903,11 +1904,11 @@ mod tests {
         let board = parse_cards("Ah 7h 2c").unwrap();
         let set = parse_cards("As Ad").unwrap(); // top set
         let air = parse_cards("9c 4d").unwrap();
-        let bs = a.bucket([set[0], set[1]], &board, &mut rng);
-        let ba = a.bucket([air[0], air[1]], &board, &mut rng);
+        let bs = a.bucket(Hole::new(set[0], set[1]).unwrap(), &board, &mut rng);
+        let ba = a.bucket(Hole::new(air[0], air[1]).unwrap(), &board, &mut rng);
         assert!(bs > ba, "top set bucket {} must beat air bucket {}", bs, ba);
         // Cache stability.
-        assert_eq!(bs, a.bucket([set[1], set[0]], &board, &mut rng));
+        assert_eq!(bs, a.bucket(Hole::new(set[1], set[0]).unwrap(), &board, &mut rng));
     }
 
     fn small_strat_ctx() -> StratCtx {
@@ -1947,8 +1948,8 @@ mod tests {
         let board = parse_cards("Ah 7h 2c").unwrap();
         let set = parse_cards("As Ad").unwrap();
         let air = parse_cards("9c 4d").unwrap();
-        let f_set = strategic_fingerprint(&sc, [set[0], set[1]], &board, &mut rng);
-        let f_air = strategic_fingerprint(&sc, [air[0], air[1]], &board, &mut rng);
+        let f_set = strategic_fingerprint(&sc, Hole::new(set[0], set[1]).unwrap(), &board, &mut rng);
+        let f_air = strategic_fingerprint(&sc, Hole::new(air[0], air[1]).unwrap(), &board, &mut rng);
         assert_eq!(f_set.len(), f_air.len());
         assert_ne!(f_set.len(), QUANTILES, "dimension must not collide with equity features");
         // Value features live in the last three slots: [mean, std, winfrac].
@@ -1983,12 +1984,12 @@ mod tests {
         let board = parse_cards("Ah 7h 2c").unwrap();
         let set = parse_cards("As Ad").unwrap();
         let air = parse_cards("9c 4d").unwrap();
-        let bs = a.bucket([set[0], set[1]], &board, &mut rng);
-        let ba = a.bucket([air[0], air[1]], &board, &mut rng);
+        let bs = a.bucket(Hole::new(set[0], set[1]).unwrap(), &board, &mut rng);
+        let ba = a.bucket(Hole::new(air[0], air[1]).unwrap(), &board, &mut rng);
         assert!(bs < 6 && ba < 6);
         assert_ne!(bs, ba, "monster and air should land in different strategic buckets");
         // Cache stability across the suit-symmetric lookup.
-        assert_eq!(bs, a.bucket([set[1], set[0]], &board, &mut rng));
+        assert_eq!(bs, a.bucket(Hole::new(set[1], set[0]).unwrap(), &board, &mut rng));
     }
 
     /// Every non-terminal state reached by random abstract play must offer at

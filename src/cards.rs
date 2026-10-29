@@ -191,6 +191,64 @@ impl FromStr for Card {
     }
 }
 
+/// Two different cards: a player's hole cards, or one of the 1326 combos
+/// a range is indexed by. Kept in the order dealt, since bucketing seeds
+/// its draws from the cards; read the cards through `Deref`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Hole([Card; 2]);
+
+impl Hole {
+    /// Stands in for the holes of seats a table does not have.
+    pub const FILL: Hole = Hole([Card(0), Card(1)]);
+
+    pub fn new(a: Card, b: Card) -> Option<Hole> {
+        (a != b).then_some(Hole([a, b]))
+    }
+
+    /// Position among the 1326 combos, the same for either card order:
+    /// `all_combos()[h.index()]` holds the same two cards.
+    #[inline(always)]
+    pub fn index(self) -> usize {
+        let [a, b] = self.0;
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        hi.index() * (hi.index() - 1) / 2 + lo.index()
+    }
+}
+
+impl TryFrom<[Card; 2]> for Hole {
+    type Error = String;
+
+    fn try_from([a, b]: [Card; 2]) -> Result<Hole, String> {
+        Hole::new(a, b).ok_or_else(|| format!("card {a} appears twice"))
+    }
+}
+
+impl std::ops::Deref for Hole {
+    type Target = [Card; 2];
+
+    fn deref(&self) -> &[Card; 2] {
+        &self.0
+    }
+}
+
+impl IntoIterator for Hole {
+    type Item = Card;
+    type IntoIter = std::array::IntoIter<Card, 2>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Hole {
+    type Item = &'a Card;
+    type IntoIter = std::slice::Iter<'a, Card>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 /// Reads a JSON list of card names such as `["Ah", "Kd"]`, for
 /// `#[serde(deserialize_with)]`. Card files store indices; the APIs that
 /// we talk to send names.
@@ -201,11 +259,12 @@ pub fn card_names<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Card>, D::Error
         .collect()
 }
 
-/// `card_names` for exactly two cards.
-pub fn hole_cards<'de, D: Deserializer<'de>>(d: D) -> Result<[Card; 2], D::Error> {
+/// `card_names` for exactly two different cards.
+pub fn hole_cards<'de, D: Deserializer<'de>>(d: D) -> Result<Hole, D::Error> {
     let cards = card_names(d)?;
     let n = cards.len();
-    cards.try_into().map_err(|_| D::Error::invalid_length(n, &"two hole cards"))
+    let cards: [Card; 2] = cards.try_into().map_err(|_| D::Error::invalid_length(n, &"two hole cards"))?;
+    Hole::try_from(cards).map_err(D::Error::custom)
 }
 
 pub fn card_str(c: Card) -> String {
@@ -278,5 +337,15 @@ mod tests {
         assert_eq!(c, make_card(12, 3));
         assert!(bincode::deserialize::<Card>(&[200u8]).is_err());
         assert_eq!(bincode::serialize(&c).unwrap(), vec![51u8]);
+    }
+
+    #[test]
+    fn a_hole_is_two_different_cards() {
+        let (ah, kd) = (parse_card("Ah").unwrap(), parse_card("Kd").unwrap());
+        assert_eq!(Hole::new(ah, ah), None);
+        assert!(Hole::try_from([kd, kd]).is_err());
+        let h = Hole::new(kd, ah).unwrap();
+        assert_eq!(*h, [kd, ah], "the dealt order is kept");
+        assert_eq!(h.index(), Hole::new(ah, kd).unwrap().index());
     }
 }

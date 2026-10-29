@@ -18,7 +18,7 @@
 
 use crate::abstraction::{AbsAction, Token};
 use crate::bot::Policy;
-use crate::cards::{fresh_deck, Card};
+use crate::cards::{fresh_deck, Card, Hole};
 use crate::engine::{Hand, HandConfig, PlayerAction};
 use crate::eval::{eval_hole_board, HandValue};
 use crate::search::{all_combos, NUM_COMBOS};
@@ -48,7 +48,7 @@ impl BotRange {
     }
 
     /// Zero out combos containing any of `cards` (board, or LBR's own holes).
-    pub fn exclude(&mut self, combos: &[[Card; 2]], cards: &[Card]) {
+    pub fn exclude(&mut self, combos: &[Hole], cards: &[Card]) {
         for (i, combo) in combos.iter().enumerate() {
             if combo.iter().any(|c| cards.contains(c)) {
                 self.weights[i] = 0.0;
@@ -59,7 +59,7 @@ impl BotRange {
 
 pub struct Lbr<'a> {
     policy: &'a Policy,
-    combos: Vec<[Card; 2]>,
+    combos: Vec<Hole>,
     /// Board completions sampled per equity estimate (exact on the river).
     runouts: NonZeroU32,
 }
@@ -170,7 +170,7 @@ impl Lbr<'_> {
         let me = h.to_act().expect("LBR acts in a live hand");
         let hole = h.hole(me);
         let board = h.board();
-        let wp = self.range_equity(hole, board, &range.weights, rng);
+        let wp = self.range_equity(*hole, board, &range.weights, rng);
         let pot0 = h.pot() as f64;
         let asked = h.to_call().min(h.stack(me)) as f64;
 
@@ -231,7 +231,7 @@ impl Lbr<'_> {
             let risk = x_eff.saturating_sub(h.street_commit(me)) as f64;
             let gain = x_eff.saturating_sub(opp_commit) as f64;
             let wp2 = if fp < 1.0 {
-                self.range_equity(hole, board, &cont, rng)
+                self.range_equity(*hole, board, &cont, rng)
             } else {
                 0.5
             };
@@ -276,7 +276,7 @@ pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: NonZeroU3
             deck.shuffle(&mut rng);
             let mut table = Table::new(cfg, button, deck);
             let mut range = BotRange::new();
-            range.exclude(&lbr.combos, &table.real.hole(lbr_seat));
+            range.exclude(&lbr.combos, &table.real.hole(lbr_seat)[..]);
 
             let mut guard = 0;
             while let Some(p) = table.real.to_act() {
@@ -444,7 +444,7 @@ impl Lbr<'_> {
                 }
             })
             .collect();
-        let wp = self.joint_equity(hole, board, &live_ranges, rng);
+        let wp = self.joint_equity(*hole, board, &live_ranges, rng);
         let pot0 = h.pot() as f64;
         let asked = h.to_call().min(h.stack(me)) as f64;
 
@@ -523,7 +523,7 @@ impl Lbr<'_> {
             let risk = x.min(h.street_commit(me) + h.stack(me)).saturating_sub(h.street_commit(me)) as f64;
             let cont_refs: Vec<Option<&[f64]>> = cont.iter().map(|c| c.as_deref()).collect();
             let wp2 = if p_all_fold < 1.0 {
-                self.joint_equity(hole, board, &cont_refs, rng)
+                self.joint_equity(*hole, board, &cont_refs, rng)
             } else {
                 0.5
             };
@@ -576,7 +576,7 @@ pub fn run_lbr_multiway(
                 .map(|j| {
                     (j != lbr_seat).then(|| {
                         let mut r = BotRange::new();
-                        r.exclude(&lbr.combos, &table.real.hole(lbr_seat));
+                        r.exclude(&lbr.combos, &table.real.hole(lbr_seat)[..]);
                         r
                     })
                 })
@@ -780,9 +780,9 @@ mod tests {
 
         let aa_combo = parse_cards("As Ah").unwrap();
         let junk = parse_cards("7c 2d").unwrap();
-        assert!(range.weights[crate::search::combo_index(aa_combo[0], aa_combo[1])] > 0.99);
+        assert!(range.weights[Hole::new(aa_combo[0], aa_combo[1]).unwrap().index()] > 0.99);
         assert_eq!(
-            range.weights[crate::search::combo_index(junk[0], junk[1])],
+            range.weights[Hole::new(junk[0], junk[1]).unwrap().index()],
             0.0,
             "exact Bayes update must zero out non-raising hands"
         );
@@ -797,14 +797,14 @@ mod tests {
         // Hero holds the royal flush: must call.
         let t = river_facing_shove("As Ks 2c 7d Qs Js Ts 3h 4d", &policy);
         let mut range = BotRange::new();
-        range.exclude(&lbr.combos, &t.real.hole(0));
+        range.exclude(&lbr.combos, &t.real.hole(0)[..]);
         range.exclude(&lbr.combos, t.real.board());
         assert_eq!(lbr.action(&t, &range, 1, &mut rng), AbsAction::CheckCall);
 
         // Hero holds six-high air: must fold.
         let t = river_facing_shove("6c 2h Ah Kd Qs Js Ts 3h 4d", &policy);
         let mut range = BotRange::new();
-        range.exclude(&lbr.combos, &t.real.hole(0));
+        range.exclude(&lbr.combos, &t.real.hole(0)[..]);
         range.exclude(&lbr.combos, t.real.board());
         assert_eq!(lbr.action(&t, &range, 1, &mut rng), AbsAction::Fold);
     }

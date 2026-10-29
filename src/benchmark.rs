@@ -11,7 +11,7 @@
 //! Pluribus's play.
 
 use crate::bot::Policy;
-use crate::cards::{parse_card, Card};
+use crate::cards::{parse_card, Card, Hole};
 use crate::engine::{Blinds, HandConfig, PlayerAction, Players, Stack, Street};
 use crate::table::Table;
 use rand::rngs::SmallRng;
@@ -145,7 +145,7 @@ pub fn replay_hand(
 
     // Collect dealt cards, then build a deck matching the engine's layout:
     // holes at deck[2p], deck[2p+1]; board at deck[2n..2n+5].
-    let mut holes: Vec<Option<[Card; 2]>> = vec![None; n];
+    let mut holes: Vec<Option<Hole>> = vec![None; n];
     let mut board: Vec<Card> = Vec::with_capacity(5);
     for a in &phh.actions {
         let mut w = a.split_whitespace();
@@ -157,7 +157,7 @@ pub fn replay_hand(
                     let c1 = parse_card(&cards[0..2]);
                     let c2 = parse_card(&cards[2..4]);
                     if let (Some(c1), Some(c2)) = (c1, c2) {
-                        holes[seat] = Some([c1, c2]);
+                        holes[seat] = Hole::new(c1, c2);
                     }
                 }
             }
