@@ -662,7 +662,6 @@ mod tests {
     use crate::abstraction::{preflop_bucket, AbsConfig, Abstraction};
     use crate::cards::parse_cards;
     use crate::cfr::{make_key, Blueprint};
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn abs_small() -> Abstraction {

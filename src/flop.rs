@@ -122,6 +122,7 @@ impl<'a> FlopSolver<'a> {
     /// Build the depth-limited flop tree from a decision point `h` (flop
     /// street, exactly two live players; `h.to_act()` becomes solver player
     /// 0). `keep` restricts bet sizes as in the turn solver.
+    #[cfg(test)]
     pub fn build(
         h: &Hand,
         abs: &Abstraction,

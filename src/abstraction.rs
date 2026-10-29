@@ -111,6 +111,7 @@ pub enum MenuShape {
 /// - equity-distribution quantiles (dimension == QUANTILES), or
 /// - strategic fingerprints from a previous blueprint (any other dimension:
 ///   prior policy's action distribution + rollout value statistics).
+///
 /// Trained once before blueprint training and persisted with the blueprint
 /// so play-time bucketing matches training exactly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,14 +269,12 @@ fn standard_state(hole: [Card; 2], board: &[Card]) -> (crate::engine::Hand, Vec<
     for (i, &c) in board.iter().enumerate() {
         deck[4 + i] = c;
     }
-    let mut next = 4 + board.len();
-    for c in free {
-        deck[next] = c;
-        next += 1;
+    for (slot, c) in deck[4 + board.len()..].iter_mut().zip(free) {
+        *slot = c;
     }
     let mut h = crate::engine::Hand::new(&cfg, 0, deck);
     let mut hist = Vec::with_capacity(8);
-    let mut limp_check = |h: &mut crate::engine::Hand, hist: &mut Vec<u8>| {
+    let limp_check = |h: &mut crate::engine::Hand, hist: &mut Vec<u8>| {
         for _ in 0..2 {
             h.apply(crate::engine::PlayerAction::CheckCall);
             hist.push(AbsAction::CheckCall.token());
@@ -433,7 +432,7 @@ impl Abstraction {
                 let mut rng = SmallRng::seed_from_u64(0);
                 self.bucket(*hole, board, &mut rng);
                 let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if d % 100_000 == 0 || d == n {
+                if d.is_multiple_of(100_000) || d == n {
                     progress(street_len, d);
                 }
             });
@@ -661,17 +660,22 @@ impl Abstraction {
         // Keyed by board AND bucket count: abstractions with different
         // bucket counts coexist in one thread (blueprint lookups vs a
         // finer subgame solver) and must not share a table.
+        struct Memo {
+            board: [Card; 5],
+            buckets: u16,
+            perm: [u8; 4],
+            table: std::sync::Arc<Vec<u16>>,
+        }
         thread_local! {
-            static LAST: std::cell::RefCell<Option<([Card; 5], u16, [u8; 4], std::sync::Arc<Vec<u16>>)>> =
-                const { std::cell::RefCell::new(None) };
+            static LAST: std::cell::RefCell<Option<Memo>> = const { std::cell::RefCell::new(None) };
         }
         let b5 = [board[0], board[1], board[2], board[3], board[4]];
         let nb = self.cfg.postflop_buckets;
         let memo = LAST.with(|l| {
             l.borrow()
                 .as_ref()
-                .filter(|(b, n, _, _)| *b == b5 && *n == nb)
-                .map(|(_, _, p, t)| (*p, t.clone()))
+                .filter(|m| m.board == b5 && m.buckets == nb)
+                .map(|m| (m.perm, m.table.clone()))
         });
         let (perm, table) = match memo {
             Some(hit) => hit,
@@ -690,7 +694,14 @@ impl Abstraction {
                         })
                         .clone(),
                 };
-                LAST.with(|l| *l.borrow_mut() = Some((b5, nb, perm, table.clone())));
+                LAST.with(|l| {
+                    *l.borrow_mut() = Some(Memo {
+                        board: b5,
+                        buckets: nb,
+                        perm,
+                        table: table.clone(),
+                    })
+                });
                 (perm, table)
             }
         };
@@ -1684,9 +1695,6 @@ mod tests {
         assert!(means.windows(2).all(|w| w[0] <= w[1]));
     }
 
-    /// With trained centroids, hands with clearly different distributions land
-    /// in different buckets, and bucketing is stable via the cache.
-    #[test]
     /// The exact river table must reproduce naive per-hole exact equity
     /// (direct loop over all compatible opponent combos) bucket-for-bucket.
     #[test]

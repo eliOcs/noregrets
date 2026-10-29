@@ -212,7 +212,7 @@ pub fn build(
             .min(3);
         let slot = &mut stats.agree[street];
         slot.1 += 1;
-        if let Some(probs) = counts.get(&d.key[..].to_vec()) {
+        if let Some(probs) = counts.get(&d.key[..]) {
             let best = probs
                 .iter()
                 .enumerate()

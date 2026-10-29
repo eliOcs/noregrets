@@ -95,6 +95,7 @@ pub fn search_timing_report() -> Option<String> {
 }
 
 /// How many stale-menu blueprint lookups have been seen this process.
+#[cfg(test)]
 pub fn menu_mismatch_count() -> u64 {
     MENU_MISMATCHES.load(Ordering::Relaxed)
 }
@@ -342,6 +343,7 @@ impl Policy {
     /// re-solving) instead of being priced at the nearest abstract size.
     /// `shadow` (the on-tree mirror) is used only for blueprint infoset
     /// lookups; pass the same hand twice when they cannot diverge.
+    #[allow(clippy::too_many_arguments)]
     pub fn act_with_search(
         &self,
         real: &Hand,
@@ -435,6 +437,7 @@ impl Policy {
     /// distribution is the teacher signal, not just a sampled action).
     /// Falls back to the blueprint distribution when no solver claims the
     /// spot.
+    #[allow(clippy::too_many_arguments)]
     pub fn search_dist(
         &self,
         real: &Hand,
@@ -443,7 +446,7 @@ impl Policy {
         params: SearchParams,
         train_cfg: &TrainConfig,
         tracker: Option<&RangeTracker>,
-        mut session: Option<&mut SearchSession>,
+        session: Option<&mut SearchSession>,
         round: Option<&RoundRoot>,
         rng: &mut SmallRng,
     ) -> (Vec<AbsAction>, Vec<f64>) {
@@ -471,8 +474,7 @@ impl Policy {
         // resolve's gadget (continual resolving).
         if real.street() == Street::Turn && real.live_count() == 2 {
             if let Some(tr) = tracker {
-                let sess = session.as_deref_mut();
-                if let Some(d) = self.turn_dist(real, hist, tr, params, sess, rng) {
+                if let Some(d) = self.turn_dist(real, hist, tr, params, session, rng) {
                     return d;
                 }
             }
@@ -566,7 +568,7 @@ impl Policy {
         } else {
             solver.solve(10_000, params.time_ms);
         }
-        Some(solver.root_strategy(h.hole(hero))?)
+        solver.root_strategy(h.hole(hero))
     }
 
     /// Exact turn+river resolve over both players' tracked ranges (vector
@@ -645,7 +647,7 @@ impl Policy {
         } else {
             solver.solve(10_000, params.time_ms, params.qre_lambda);
         }
-        Some(solver.root_strategy(h.hole(hero))?)
+        solver.root_strategy(h.hole(hero))
     }
 
     /// Rollout-estimated safety values for the opponent: for each of its
@@ -743,6 +745,7 @@ impl Policy {
 /// every traversal — from tracked ranges when a tracker is given) and train
 /// it for the given budget. The abstraction is shared with the caller so
 /// equity/bucket caches persist across decisions.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_subgame(
     abs: Arc<Abstraction>,
     train_cfg: &TrainConfig,
@@ -782,7 +785,6 @@ mod tests {
     use crate::cfr::make_key;
     use crate::engine::{HandConfig, PlayerAction};
     use rand::SeedableRng;
-    use std::collections::HashMap;
 
     fn abs_small() -> Abstraction {
         Abstraction::new(AbsConfig {
@@ -1108,7 +1110,7 @@ mod tests {
         );
         let mut hist: Vec<u8> = Vec::new();
         let mut tracker = RangeTracker::new(2);
-        let mut act = |h: &mut Hand, hist: &mut Vec<u8>, a: AbsAction| {
+        let act = |h: &mut Hand, hist: &mut Vec<u8>, a: AbsAction| {
             let street_before = h.street();
             h.apply(abs.concrete(h, a));
             hist.push(a.token());

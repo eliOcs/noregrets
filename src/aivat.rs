@@ -313,7 +313,6 @@ mod tests {
     use crate::cards::parse_cards;
     use crate::cfr::Blueprint;
     use crate::table::run_eval;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn empty_policy() -> Policy {

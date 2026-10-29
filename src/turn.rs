@@ -351,6 +351,7 @@ impl TurnSolver {
 
     /// Player 1's linear-averaged probability of entering the subgame with
     /// `ci` (1.0 without a gadget or before any iteration).
+    #[cfg(test)]
     pub fn avg_enter_prob(&self, ci: usize) -> f64 {
         match &self.gadget {
             None => 1.0,

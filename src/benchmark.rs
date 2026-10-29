@@ -367,7 +367,6 @@ mod tests {
     use super::*;
     use crate::abstraction::{AbsConfig, Abstraction};
     use crate::cfr::Blueprint;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     const SAMPLE: &str = r#"

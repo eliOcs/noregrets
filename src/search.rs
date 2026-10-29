@@ -22,7 +22,7 @@ pub const NUM_COMBOS: usize = 1326;
 /// never fully exclude a combo.
 const OBS_FLOOR: f64 = 0.02;
 
-/// Floor of the near-hard Bayes weights (`hard_weights`): rare actions
+/// Floor of the near-hard Bayes weights (`RangeTracker::hard`): rare actions
 /// such as a preflop jam keep their information instead of drowning in a
 /// floor larger than their own frequency.
 const HARD_FLOOR: f64 = 1e-3;
@@ -115,6 +115,7 @@ impl RangeTracker {
 
     /// Overwrite every combo weight for a seat (belief injection: rigged
     /// ranges in tests, learned ranges from a belief model).
+    #[cfg(test)]
     pub fn set_all(&mut self, seat: usize, w: f64) {
         self.weights[seat].fill(w);
         self.hard[seat].fill(w);
@@ -124,12 +125,6 @@ impl RangeTracker {
     pub fn set_weight(&mut self, seat: usize, hole: [Card; 2], w: f64) {
         self.weights[seat][combo_index(hole[0], hole[1])] = w;
         self.hard[seat][combo_index(hole[0], hole[1])] = w;
-    }
-
-    /// Near-hard Bayes weights for a seat (floor `HARD_FLOOR`, no
-    /// widening), indexed by `combo_index`.
-    pub fn hard_weights(&self, seat: usize) -> &[f64] {
-        &self.hard[seat]
     }
 
     /// Sample a hole for `seat` from its near-hard weights, avoiding (and
@@ -298,7 +293,7 @@ mod tests {
     use crate::cards::{fresh_deck, parse_cards};
     use crate::cfr::{make_key, Blueprint};
     use crate::engine::HandConfig;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     /// Off-model actions must WIDEN the posterior instead of concentrating
     /// it: with a blueprint where only AA raises, observing a raise still

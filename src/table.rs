@@ -590,7 +590,6 @@ mod tests {
     use crate::abstraction::AbsConfig;
     use crate::cfr::Blueprint;
     use crate::engine::Street;
-    use std::collections::HashMap;
 
     #[test]
     fn baseline_ranges_have_their_documented_sizes() {

@@ -20,6 +20,8 @@ mod mirror;
 mod net;
 mod play;
 mod preflop;
+// Exercised by its own tests; no command drives the bandit yet.
+#[cfg_attr(not(test), allow(dead_code))]
 mod portfolio;
 mod river;
 mod search;
@@ -929,11 +931,9 @@ fn main() {
             let mut snapshots = 0u32;
             while done_before < iters {
                 let next_save = save_at.iter().copied().filter(|&n| n > done_before).min();
-                let next_sweep = if preflop_sweep_every > 0 {
-                    (done_before / preflop_sweep_every + 1) * preflop_sweep_every
-                } else {
-                    u64::MAX
-                };
+                let next_sweep = done_before
+                    .checked_div(preflop_sweep_every)
+                    .map_or(u64::MAX, |k| (k + 1) * preflop_sweep_every);
                 let this = chunk
                     .min(iters - done_before)
                     .min(next_save.map_or(u64::MAX, |n| n - done_before))
@@ -941,7 +941,7 @@ fn main() {
                 let base = done_before;
                 trainer.run(this, &|done| pb.set_position(base + done));
                 done_before += this;
-                if preflop_sweep_every > 0 && (done_before % preflop_sweep_every == 0 || done_before == iters) {
+                if preflop_sweep_every > 0 && (done_before.is_multiple_of(preflop_sweep_every) || done_before == iters) {
                     let t = trainer.iterations().min(linear_cap) as f64;
                     trainer.sweep_preflop_average(t);
                 }
@@ -1736,7 +1736,6 @@ fn main() {
                     safe_resolve,
                     ..SearchParams::default()
                 },
-                alpha,
                 seed,
             };
             println!(

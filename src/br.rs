@@ -546,7 +546,6 @@ mod tests {
     use crate::cards::parse_cards;
     use crate::cfr::Blueprint;
     use crate::table::Table;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn abs_small() -> Abstraction {

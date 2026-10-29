@@ -134,28 +134,29 @@ pub fn serve(served: &[Served]) {
                 id: None,
                 error: format!("bad request: {e}"),
             },
-            Ok(req) => match {
+            Ok(req) => {
                 let s = &served[pick(served, &req)];
-                match &s.search {
+                let decision = match &s.search {
                     Some(searcher) => decide_with_search(&s.bot, &s.cfg, searcher, &req),
                     None => decide(&s.bot, &s.cfg, &req),
-                }
-            } {
-                Ok(d) => Response::Strategy {
-                    id: req.id,
-                    strategy: d.strategy,
-                    source: match d.source {
-                        Source::Blueprint => "blueprint",
-                        Source::Unseen => "unseen",
-                        Source::Capped => "capped",
-                        Source::Search => "search",
+                };
+                match decision {
+                    Ok(d) => Response::Strategy {
+                        id: req.id,
+                        strategy: d.strategy,
+                        source: match d.source {
+                            Source::Blueprint => "blueprint",
+                            Source::Unseen => "unseen",
+                            Source::Capped => "capped",
+                            Source::Search => "search",
+                        },
                     },
-                },
-                Err(error) => Response::Error {
-                    id: Some(req.id),
-                    error,
-                },
-            },
+                    Err(error) => Response::Error {
+                        id: Some(req.id),
+                        error,
+                    },
+                }
+            }
         };
         write_line(&mut out, &response);
     }

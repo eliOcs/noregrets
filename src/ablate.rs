@@ -24,6 +24,15 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
+/// One spot's exploitability margins at one epsilon.
+struct SpotMargins {
+    unsafe_mean: f64,
+    unsafe_max: f64,
+    safe_mean: f64,
+    safe_max: f64,
+    pot: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AblateRow {
     pub epsilon: f64,
@@ -99,8 +108,7 @@ pub fn run(spots: usize, iters: u64, seed: u64) -> Vec<AblateRow> {
     });
     let epsilons = [0.25, 0.5, 1.0];
 
-    // Per spot × epsilon: (unsafe_mean, unsafe_max, safe_mean, safe_max, pot)
-    let results: Vec<Vec<(f64, f64, f64, f64, f64)>> = (0..spots)
+    let results: Vec<Vec<SpotMargins>> = (0..spots)
         .into_par_iter()
         .map(|i| {
             let mut rng =
@@ -136,7 +144,13 @@ pub fn run(spots: usize, iters: u64, seed: u64) -> Vec<AblateRow> {
                     safe.solve(iters, 120_000, None);
                     let (sm, sx) = margins(&safe, &alt, &truth);
 
-                    (um, ux, sm, sx, h.pot() as f64)
+                    SpotMargins {
+                        unsafe_mean: um,
+                        unsafe_max: ux,
+                        safe_mean: sm,
+                        safe_max: sx,
+                        pot: h.pot() as f64,
+                    }
                 })
                 .collect()
         })
@@ -156,12 +170,12 @@ pub fn run(spots: usize, iters: u64, seed: u64) -> Vec<AblateRow> {
                 pot: 0.0,
             };
             for spot in &results {
-                let (um, ux, sm, sx, pot) = spot[ei];
-                row.unsafe_mean += um / n;
-                row.unsafe_max = row.unsafe_max.max(ux);
-                row.safe_mean += sm / n;
-                row.safe_max = row.safe_max.max(sx);
-                row.pot += pot / n;
+                let m = &spot[ei];
+                row.unsafe_mean += m.unsafe_mean / n;
+                row.unsafe_max = row.unsafe_max.max(m.unsafe_max);
+                row.safe_mean += m.safe_mean / n;
+                row.safe_max = row.safe_max.max(m.safe_max);
+                row.pot += m.pot / n;
             }
             row
         })

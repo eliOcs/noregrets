@@ -221,6 +221,15 @@ fn place(deck: &mut [Card; 52], seat: usize, hole: [Card; 2]) {
     }
 }
 
+/// One sampled deal of `action_ev`: its importance weight (the reach of the
+/// line for everyone but the hero) and the hero's value of each action and
+/// of the blueprint's mix, in big blinds.
+struct Deal {
+    weight: f64,
+    vals: Vec<f64>,
+    mixed: f64,
+}
+
 /// Values of every action at the node for one hand class, in big blinds.
 pub struct ActionEv {
     pub class: String,
@@ -268,8 +277,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
     let acts = bot.abs.abstract_actions(&n0.hand);
     let k = acts.len();
     let bb = cfg.bb as f64;
-    // Per deal: weight and the hero's value of each action (bb).
-    let rows: Vec<(f64, Vec<f64>, f64)> = (0..deals)
+    let rows: Vec<Deal> = (0..deals)
         .into_par_iter()
         .map(|i| {
             let mut rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -290,7 +298,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
             }
             let (_, mix, _) = dist(bot, &n.hand, &n.hist, &mut rng);
             if w == 0.0 {
-                return (0.0, vec![0.0; k], 0.0);
+                return Deal { weight: 0.0, vals: vec![0.0; k], mixed: 0.0 };
             }
             // Common random numbers: every action is played out with the
             // same deck and the same sampling stream.
@@ -310,7 +318,7 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
                 })
                 .collect();
             let mixed: f64 = vals.iter().zip(&mix).map(|(v, p)| v * p).sum();
-            (w, vals, mixed)
+            Deal { weight: w, vals, mixed }
         })
         .collect();
     let mut rng = SmallRng::seed_from_u64(0);
@@ -327,24 +335,24 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
         }
         h.apply(bot.abs.concrete(&h, a));
     }
-    let sw: f64 = rows.iter().map(|r| r.0).sum();
-    let sw2: f64 = rows.iter().map(|r| r.0 * r.0).sum();
+    let sw: f64 = rows.iter().map(|r| r.weight).sum();
+    let sw2: f64 = rows.iter().map(|r| r.weight * r.weight).sum();
     if sw == 0.0 {
         return Err("no deal reached the node".into());
     }
     // Self-normalized importance-sampling mean and its delta-method
     // standard error.
-    let est = |f: &dyn Fn(&(f64, Vec<f64>, f64)) -> f64| {
-        let m = rows.iter().map(|r| r.0 * f(r)).sum::<f64>() / sw;
-        let var = rows.iter().map(|r| (r.0 * (f(r) - m)).powi(2)).sum::<f64>() / (sw * sw);
+    let est = |f: &dyn Fn(&Deal) -> f64| {
+        let m = rows.iter().map(|r| r.weight * f(r)).sum::<f64>() / sw;
+        let var = rows.iter().map(|r| (r.weight * (f(r) - m)).powi(2)).sum::<f64>() / (sw * sw);
         (m, 1.96 * var.sqrt())
     };
     Ok(ActionEv {
         class: class.to_string(),
         actions: acts.iter().map(|&a| action_name(&n0.hand, &bot.abs, a)).collect(),
         mix,
-        ev: (0..k).map(|j| est(&|r| r.1[j])).collect(),
-        vs_mix: (0..k).map(|j| est(&|r| r.1[j] - r.2)).collect(),
+        ev: (0..k).map(|j| est(&|r| r.vals[j])).collect(),
+        vs_mix: (0..k).map(|j| est(&|r| r.vals[j] - r.mixed)).collect(),
         ess: sw * sw / sw2,
         deals,
         hero_reach,

@@ -792,7 +792,7 @@ impl Trainer {
                 return v;
             }
             let tb = self.abs.bucket(h.hole(traverser), h.board(), rng);
-            let bkey = baseline_key(&key, traverser, tb);
+            let bkey = baseline_key(key, traverser, tb);
             let mut b = self
                 .baselines
                 .entry(bkey)

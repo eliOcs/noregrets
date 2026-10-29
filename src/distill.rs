@@ -27,8 +27,6 @@ use rayon::prelude::*;
 pub struct DistillCfg {
     pub hands: u64,
     pub params: SearchParams,
-    /// Blend weight toward the search distribution at recorded infosets.
-    pub alpha: f64,
     pub seed: u64,
 }
 
@@ -190,7 +188,6 @@ mod tests {
     use super::*;
     use crate::abstraction::{AbsConfig, Abstraction, Centroids};
     use crate::cfr::{TrainConfig, Trainer};
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     #[test]
@@ -289,14 +286,13 @@ mod tests {
                 adaptive: false,
                 round_root: true,
             },
-            alpha: 0.5,
             seed: 42,
         };
         let (records, samples) = collect(&policy, &hand, &dcfg);
         assert!(samples > 0, "self-play must record searched decisions");
         let n_before = policy.blueprint.strategies.len();
         let owned = (*policy.blueprint).clone();
-        let (bp2, updated, skipped) = merge(owned, &records, dcfg.alpha);
+        let (bp2, updated, skipped) = merge(owned, &records, 0.5);
         assert!(updated > 0);
         assert_eq!(
             skipped, 0,
