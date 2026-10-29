@@ -17,16 +17,81 @@
 
 use crate::abstraction::AbsAction;
 use crate::bot::{Policy, SearchParams, SearchSession};
-use crate::cards::{parse_card, Card};
+use crate::cards::{card_names, hole_cards, Card};
 use crate::cfr::TrainConfig;
 use crate::engine::{HandConfig, PlayerAction, Players, Stack};
 use crate::search::RangeTracker;
 use crate::table::Table;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use serde::Deserialize;
 use serde_json::Value;
 
 pub const STACK: Stack = Stack::new(20_000).unwrap();
+
+/// Which blind we post. The API sends 0 for the big blind and 1 for the
+/// small blind, who heads-up is also the button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "u8")]
+pub enum ClientPos {
+    BigBlind,
+    SmallBlind,
+}
+
+impl ClientPos {
+    /// The engine seat on the button, with us in seat 0.
+    pub fn button(self) -> usize {
+        match self {
+            ClientPos::SmallBlind => 0,
+            ClientPos::BigBlind => 1,
+        }
+    }
+}
+
+impl TryFrom<u8> for ClientPos {
+    type Error = String;
+
+    fn try_from(p: u8) -> Result<ClientPos, String> {
+        match p {
+            0 => Ok(ClientPos::BigBlind),
+            1 => Ok(ClientPos::SmallBlind),
+            _ => Err(format!("client_pos is 0 or 1, not {p}")),
+        }
+    }
+}
+
+/// What every reply says about the hand so far; `winnings` appears once
+/// it is over. Replies are read into this when they arrive, so the hand
+/// code never meets a missing field or a card it cannot name.
+#[derive(Debug, Deserialize)]
+pub struct Reply {
+    pub token: Option<String>,
+    #[serde(default, deserialize_with = "board")]
+    pub board: Vec<Card>,
+    #[serde(default)]
+    pub action: String,
+    pub winnings: Option<i64>,
+}
+
+/// What the first reply of a hand adds: where we sit and what we hold.
+#[derive(Debug, Deserialize)]
+struct Deal {
+    client_pos: ClientPos,
+    #[serde(deserialize_with = "hole_cards")]
+    hole_cards: [Card; 2],
+}
+
+pub(crate) fn board<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Card>, D::Error> {
+    let cards = card_names(d)?;
+    if ![0, 3, 4, 5].contains(&cards.len()) {
+        return Err(serde::de::Error::invalid_length(cards.len(), &"a board of 0, 3, 4 or 5 cards"));
+    }
+    Ok(cards)
+}
+
+fn read<'a, T: Deserialize<'a>>(v: &'a Value) -> Result<T, String> {
+    T::deserialize(v).map_err(|e| format!("bad reply: {e}"))
+}
 
 /// One parsed increment of Slumbot's action string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,8 +195,12 @@ impl HttpTransport {
         let v: Value = resp
             .into_json()
             .map_err(|e| format!("{endpoint}: bad JSON: {e}"))?;
-        if let Some(msg) = v.get("error_msg").and_then(|m| m.as_str()) {
-            return Err(format!("{endpoint}: server error: {msg}"));
+        #[derive(Deserialize)]
+        struct Failure {
+            error_msg: String,
+        }
+        if let Ok(Failure { error_msg }) = Failure::deserialize(&v) {
+            return Err(format!("{endpoint}: server error: {error_msg}"));
         }
         Ok(v)
     }
@@ -141,10 +210,11 @@ impl HttpTransport {
             "login",
             serde_json::json!({"username": username, "password": password}),
         )?;
-        v.get("token")
-            .and_then(|t| t.as_str())
-            .map(String::from)
-            .ok_or_else(|| "login: no token in response".into())
+        #[derive(Deserialize)]
+        struct Login {
+            token: String,
+        }
+        Login::deserialize(&v).map(|l| l.token).map_err(|_| "login: no token in response".into())
     }
 }
 
@@ -254,20 +324,7 @@ impl HandState {
     /// Build from the first response of a hand. Our seat is always engine
     /// seat 0; `client_pos` 1 means we are the small blind = button.
     fn build(r: &Value) -> Result<HandState, String> {
-        let client_pos = r
-            .get("client_pos")
-            .and_then(|p| p.as_u64())
-            .ok_or("no client_pos")?;
-        let holes: Vec<Card> = r
-            .get("hole_cards")
-            .and_then(|h| h.as_array())
-            .ok_or("no hole_cards")?
-            .iter()
-            .filter_map(|c| c.as_str().and_then(parse_card))
-            .collect();
-        if holes.len() != 2 {
-            return Err("bad hole cards".into());
-        }
+        let Deal { client_pos, hole_cards: holes } = read(r)?;
         let cfg = HandConfig::new(Players::TWO, STACK);
         // Engine deal order: seat 0 gets deck[0..2], seat 1 deck[2..4].
         // Opponent cards are unknown: give seat 1 arbitrary non-colliding
@@ -290,8 +347,7 @@ impl HandState {
                 }
             }
         }
-        let button = if client_pos == 1 { 0 } else { 1 };
-        let table = Table::new(&cfg, button, deck);
+        let table = Table::new(&cfg, client_pos.button(), deck);
         let mut tracker = RangeTracker::new(2).with_widening();
         // The bot can't hold our cards.
         tracker.set_weight(1, [holes[0], holes[1]], 0.0);
@@ -307,16 +363,7 @@ impl HandState {
     }
 
     /// Force newly revealed board cards into the engine.
-    fn sync_board(&mut self, r: &Value) -> Result<(), String> {
-        let board: Vec<Card> = r
-            .get("board")
-            .and_then(|b| b.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|c| c.as_str().and_then(parse_card))
-                    .collect()
-            })
-            .unwrap_or_default();
+    fn sync_board(&mut self, board: &[Card]) {
         for (i, &c) in board.iter().enumerate().skip(self.board_forced) {
             self.table.real.force_board_card(i, c);
             self.table.shadow.force_board_card(i, c);
@@ -326,13 +373,11 @@ impl HandState {
             self.tracker.exclude(newly);
             self.board_forced = board.len();
         }
-        Ok(())
     }
 
     /// Apply Slumbot's newly observed increments (everything past the
     /// cursor that happened before it is our turn again).
-    fn apply_bot_increments(&mut self, r: &Value, policy: &Policy) -> Result<(), String> {
-        let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
+    fn apply_bot_increments(&mut self, action: &str, policy: &Policy) -> Result<(), String> {
         let (incrs, new_cursor) = parse_incr(action, self.cursor)?;
         self.cursor = new_cursor;
         for inc in incrs {
@@ -421,8 +466,9 @@ pub fn run(
                 }
             }
         };
-        if let Some(t) = r.get("token").and_then(|t| t.as_str()) {
-            token = Some(t.to_string());
+        // Keep the session token even when the hand cannot be set up.
+        if let Ok(Reply { token: Some(t), .. }) = read(&r) {
+            token = Some(t);
         }
         let mut we_sent_fold = false;
         let mut st = match HandState::build(&r) {
@@ -436,13 +482,22 @@ pub fn run(
             }
         };
         loop {
-            if let Some(t) = r.get("token").and_then(|t| t.as_str()) {
-                token = Some(t.to_string());
+            let reply: Reply = match read(&r) {
+                Ok(reply) => reply,
+                Err(e) => {
+                    if cfg.verbose {
+                        eprintln!("hand {h}: {e}");
+                    }
+                    desyncs += 1;
+                    continue 'hands;
+                }
+            };
+            if let Some(t) = reply.token {
+                token = Some(t);
             }
-            if let Some(w) = r.get("winnings").and_then(|w| w.as_i64()) {
+            if let Some(w) = reply.winnings {
                 let mbb = w as f64 / 100.0 * 1000.0;
-                let action = r.get("action").and_then(|a| a.as_str()).unwrap_or("");
-                autopsy.record(action, we_sent_fold, mbb);
+                autopsy.record(&reply.action, we_sent_fold, mbb);
                 if let Some(f) = log.as_mut() {
                     use std::io::Write;
                     let _ = writeln!(f, "{r}");
@@ -454,14 +509,8 @@ pub fn run(
                 }
                 continue 'hands;
             }
-            if let Err(e) = st.sync_board(&r) {
-                if cfg.verbose {
-                    eprintln!("hand {h}: board sync failed: {e}");
-                }
-                desyncs += 1;
-                continue 'hands;
-            }
-            if let Err(e) = st.apply_bot_increments(&r, policy) {
+            st.sync_board(&reply.board);
+            if let Err(e) = st.apply_bot_increments(&reply.action, policy) {
                 if cfg.verbose {
                     eprintln!("hand {h}: {e}");
                 }
@@ -469,13 +518,7 @@ pub fn run(
                 continue 'hands;
             }
             // Board can also change on the action that closed a street.
-            if let Err(e) = st.sync_board(&r) {
-                if cfg.verbose {
-                    eprintln!("hand {h}: board sync failed: {e}");
-                }
-                desyncs += 1;
-                continue 'hands;
-            }
+            st.sync_board(&reply.board);
             if st.table.real.to_act() != Some(st.our_seat) {
                 // Server should have ended the hand or acted; ask again by
                 // desync-abort (no polling endpoint exists).
@@ -803,6 +846,36 @@ mod tests {
         assert_eq!(r.desyncs, 1, "the failed hand is a desync, not a crash");
         assert_eq!(r.hands, 1, "the second hand still completes");
         assert!((r.mbb_per_hand - 1000.0).abs() < 1e-9);
+    }
+
+    /// A reply the hand code cannot trust (a card with no name, a board of
+    /// six, a seat that is not a blind) ends that hand as a desync; the
+    /// run goes on.
+    #[test]
+    fn malformed_replies_are_desyncs() {
+        let mut bad_card = sb_hand_won("T6");
+        bad_card["board"] = json!(["Xs", "Kd", "Qs"]);
+        bad_card.as_object_mut().unwrap().remove("winnings");
+        let mut six = sb_hand("T6");
+        six["board"] = json!(["Ah", "Kd", "Qs", "Js", "3h", "4d"]);
+        let mut seat = sb_hand("T6");
+        seat["client_pos"] = json!(2);
+        let mut t = Flaky {
+            new_hands: vec![Ok(sb_hand("T6")), Ok(six), Ok(seat), Ok(sb_hand("T6"))],
+            acts: vec![Ok(bad_card), Ok(sb_hand_won("T6"))],
+        };
+        let cfg = SlumbotCfg {
+            hands: 4,
+            search: None,
+            seed: 3,
+            token: None,
+            verbose: false,
+            log: None,
+        };
+        let r = run(&empty_policy(), &mut t, &cfg, &mut |_, _| {}).unwrap();
+        assert_eq!(r.desyncs, 3);
+        assert_eq!(r.hands, 1);
+        assert!(read::<Reply>(&json!({"board": ["Ah", "Kd"]})).is_err());
     }
 
     #[test]

@@ -6,7 +6,8 @@
 //! `index()` usable directly for 52-entry tables.
 //! Ranks: 0 = Two .. 12 = Ace. Suits: 0=c, 1=d, 2=h, 3=s.
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
@@ -188,6 +189,23 @@ impl FromStr for Card {
     fn from_str(s: &str) -> Result<Card, String> {
         parse_card(s).ok_or_else(|| format!("bad card '{s}'"))
     }
+}
+
+/// Reads a JSON list of card names such as `["Ah", "Kd"]`, for
+/// `#[serde(deserialize_with)]`. Card files store indices; the APIs that
+/// we talk to send names.
+pub fn card_names<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Card>, D::Error> {
+    Vec::<String>::deserialize(d)?
+        .iter()
+        .map(|s| s.parse::<Card>().map_err(D::Error::custom))
+        .collect()
+}
+
+/// `card_names` for exactly two cards.
+pub fn hole_cards<'de, D: Deserializer<'de>>(d: D) -> Result<[Card; 2], D::Error> {
+    let cards = card_names(d)?;
+    let n = cards.len();
+    cards.try_into().map_err(|_| D::Error::invalid_length(n, &"two hole cards"))
 }
 
 pub fn card_str(c: Card) -> String {

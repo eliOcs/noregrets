@@ -14,15 +14,14 @@
 //! (`Policy::search_dist`) from ranges rebuilt by replaying the request.
 
 use crate::bot::{Policy, SearchParams};
-use crate::cards::Card;
+use crate::cards::{card_names, hole_cards, Card};
 use crate::cfr::TrainConfig;
 use crate::engine::{HandConfig, PlayerAction, Players, Stack, Street};
 use crate::mirror::{Bot, Mirror, Source};
 use crate::search::RangeTracker;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
-use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 
 /// Online search for one served blueprint: the policy shares the bot's
@@ -67,19 +66,6 @@ pub struct Request {
     #[serde(deserialize_with = "card_names")]
     pub board: Vec<Card>,
     pub actions: Vec<Act>,
-}
-
-fn card_names<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Card>, D::Error> {
-    Vec::<String>::deserialize(d)?
-        .iter()
-        .map(|s| s.parse::<Card>().map_err(D::Error::custom))
-        .collect()
-}
-
-fn hole_cards<'de, D: Deserializer<'de>>(d: D) -> Result<[Card; 2], D::Error> {
-    let cards = card_names(d)?;
-    let n = cards.len();
-    cards.try_into().map_err(|_| D::Error::invalid_length(n, &"two hole cards"))
 }
 
 /// A request checked against the table it is played at: one stack per

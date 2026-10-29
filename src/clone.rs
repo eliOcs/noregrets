@@ -12,14 +12,14 @@
 //! buckets (and serialized centroids) line up at train and play time.
 
 use crate::abstraction::Abstraction;
-use crate::cards::{parse_card, Card};
+use crate::cards::{hole_cards, Card};
 use crate::cfr::{make_key, Blueprint, StrategyMap};
 use crate::engine::{HandConfig, PlayerAction, Players};
-use crate::slumbot::{parse_incr, SlumAct, STACK};
+use crate::slumbot::{board, parse_incr, ClientPos, SlumAct, STACK};
 use crate::table::Table;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
-use serde_json::Value;
+use serde::Deserialize;
 use std::io::BufRead;
 
 /// One of Slumbot's decisions: infoset key, chosen menu index, menu size.
@@ -40,27 +40,34 @@ pub struct CloneStats {
     pub agree: [(u64, u64); 4],
 }
 
+/// One line of a `slumbot --log` file: a finished hand with both
+/// players' cards. Lines that do not read as one are skipped.
+#[derive(Debug, Deserialize)]
+struct LoggedHand {
+    client_pos: ClientPos,
+    #[serde(rename = "hole_cards", deserialize_with = "hole_cards")]
+    our: [Card; 2],
+    #[serde(rename = "bot_hole_cards", deserialize_with = "hole_cards")]
+    bot: [Card; 2],
+    #[serde(default, deserialize_with = "board")]
+    board: Vec<Card>,
+    #[serde(default)]
+    action: String,
+}
+
 /// Replay one logged hand; returns Slumbot's decisions as (key, action).
-fn replay_hand(v: &Value, abs: &Abstraction) -> Result<Vec<Decision>, String> {
-    let client_pos = v
-        .get("client_pos")
-        .and_then(|p| p.as_u64())
-        .ok_or("no client_pos")?;
-    let our: Vec<Card> = cards_field(v, "hole_cards")?;
-    let bot: Vec<Card> = cards_field(v, "bot_hole_cards")?;
-    let board: Vec<Card> = cards_field(v, "board").unwrap_or_default();
-    if our.len() != 2 || bot.len() != 2 {
-        return Err("bad hole cards".into());
-    }
-    let action = v.get("action").and_then(|a| a.as_str()).unwrap_or("");
+fn replay_hand(hand: &LoggedHand, abs: &Abstraction) -> Result<Vec<Decision>, String> {
+    let LoggedHand { client_pos, our, bot, board, action } = hand;
     let (acts, _) = parse_incr(action, 0)?;
 
     let cfg = HandConfig::new(Players::TWO, STACK);
     // Seat 0 = us, seat 1 = Slumbot (mirrors the live adapter).
     let mut deck = crate::cards::fresh_deck();
     let mut used = [false; 52];
-    for &c in our.iter().chain(bot.iter()).chain(board.iter()) {
-        used[c.index()] = true;
+    for &c in our.iter().chain(bot).chain(board) {
+        if std::mem::replace(&mut used[c.index()], true) {
+            return Err(format!("card {c} appears twice"));
+        }
     }
     deck[0] = our[0];
     deck[1] = our[1];
@@ -76,8 +83,7 @@ fn replay_hand(v: &Value, abs: &Abstraction) -> Result<Vec<Decision>, String> {
             }
         }
     }
-    let button = if client_pos == 1 { 0 } else { 1 };
-    let mut table = Table::new(&cfg, button, deck);
+    let mut table = Table::new(&cfg, client_pos.button(), deck);
     for (i, &c) in board.iter().enumerate() {
         table.real.force_board_card(i, c);
         table.shadow.force_board_card(i, c);
@@ -117,19 +123,6 @@ fn replay_hand(v: &Value, abs: &Abstraction) -> Result<Vec<Decision>, String> {
     Ok(out)
 }
 
-fn cards_field(v: &Value, field: &str) -> Result<Vec<Card>, String> {
-    v.get(field)
-        .and_then(|h| h.as_array())
-        .ok_or_else(|| format!("no {field}"))?
-        .iter()
-        .map(|c| {
-            c.as_str()
-                .and_then(parse_card)
-                .ok_or_else(|| format!("bad card in {field}"))
-        })
-        .collect()
-}
-
 /// Build a clone Blueprint from a JSONL log. `holdout` in [0,1) reserves
 /// that fraction of hands (deterministic on hand index) for measuring
 /// top-1 agreement of the trained clone. The abstraction (and the
@@ -149,14 +142,14 @@ pub fn build(
         if line.trim().is_empty() {
             continue;
         }
-        let v: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
+        let hand: LoggedHand = match serde_json::from_str(&line) {
+            Ok(hand) => hand,
             Err(_) => {
                 stats.skipped += 1;
                 continue;
             }
         };
-        let decisions = match replay_hand(&v, abs) {
+        let decisions = match replay_hand(&hand, abs) {
             Ok(d) => d,
             Err(_) => {
                 stats.skipped += 1;
@@ -262,7 +255,7 @@ mod tests {
             "board": [],
             "winnings": -100,
         });
-        let ds = replay_hand(&v, &abs).unwrap();
+        let ds = replay_hand(&serde_json::from_value(v).unwrap(), &abs).unwrap();
         assert_eq!(ds.len(), 1, "only Slumbot's raise is its decision");
         assert!(ds[0].menu_len >= 3);
         assert!(ds[0].act_ix > 1, "a raise is neither fold(0) nor call(1)");
@@ -283,7 +276,7 @@ mod tests {
             "board": ["Ah", "Kd", "Qs", "Js", "3h"],
             "winnings": -100,
         });
-        let ds = replay_hand(&v, &abs).unwrap();
+        let ds = replay_hand(&serde_json::from_value(v).unwrap(), &abs).unwrap();
         assert_eq!(ds.len(), 4, "one Slumbot decision per street");
         // Street separators accumulate in the history keys.
         let seps: Vec<usize> = ds
@@ -305,10 +298,12 @@ mod tests {
         let abs = abs_small();
         let line = r#"{"action":"b200f","client_pos":0,"hole_cards":["6c","4d"],"bot_hole_cards":["Ts","2c"],"board":[],"winnings":-100}"#;
         let path = std::env::temp_dir().join("clone_build_test.jsonl");
-        std::fs::write(&path, format!("{line}\n{line}\nnot json\n")).unwrap();
+        let bad_card = line.replace("Ts", "Xs");
+        let twice = line.replace("Ts", "6c");
+        std::fs::write(&path, format!("{line}\n{line}\nnot json\n{bad_card}\n{twice}\n")).unwrap();
         let (bp, stats) = build(path.to_str().unwrap(), &abs, 0.0).unwrap();
         assert_eq!(stats.hands, 2);
-        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.skipped, 3);
         assert_eq!(stats.decisions, 2);
         assert_eq!(stats.infosets, 1);
         let probs = bp.strategies.values().next().unwrap();
