@@ -17,7 +17,7 @@ use crate::abstraction::{AbsAction, Abstraction};
 use crate::cards::Card;
 use crate::cfr::qre_distribution;
 use crate::engine::Hand;
-use crate::eval::eval_hole_board;
+use crate::eval::{eval_hole_board, HandValue};
 use crate::search::{all_combos, combo_index, NUM_COMBOS};
 
 enum Kid {
@@ -65,7 +65,7 @@ pub struct RiverSolver {
     range: [Vec<f64>; 2],
     /// Combo indices sorted by river hand rank; invalid combos excluded.
     sorted: Vec<u32>,
-    rank: Vec<u32>,
+    rank: Vec<Option<HandValue>>,
     nodes: Vec<Node>,
     terminals: Vec<Terminal>,
     gadget: Option<Gadget>,
@@ -114,15 +114,9 @@ impl RiverSolver {
         }
 
         let board5: [Card; 5] = board.as_slice().try_into().ok()?;
-        let rank: Vec<u32> = combos
+        let rank: Vec<Option<HandValue>> = combos
             .iter()
-            .map(|c| {
-                if valid(c) {
-                    eval_hole_board(c, &board5)
-                } else {
-                    0
-                }
-            })
+            .map(|c| valid(c).then(|| eval_hole_board(c, &board5)))
             .collect();
         let mut sorted: Vec<u32> = (0..NUM_COMBOS as u32)
             .filter(|&ci| valid(&combos[ci as usize]))
@@ -664,7 +658,7 @@ impl RiverSolver {
 pub(crate) fn showdown_sweep(
     combos: &[[Card; 2]],
     sorted: &[u32],
-    rank: &[u32],
+    rank: &[Option<HandValue>],
     reach_opp: &[f64],
     total: f64,
     card: &[f64; 52],
@@ -806,7 +800,7 @@ mod tests {
             let mut total = 0.0;
             let mut card = [0.0f64; 52];
             for (ci, c) in solver.combos.iter().enumerate() {
-                let w = if solver.rank[ci] > 0 { reach[ci] } else { 0.0 };
+                let w = if solver.rank[ci].is_some() { reach[ci] } else { 0.0 };
                 if w > 0.0 {
                     total += w;
                     card[c[0].index()] += w;
@@ -814,7 +808,7 @@ mod tests {
                 }
             }
             let masked: Vec<f64> = (0..NUM_COMBOS)
-                .map(|ci| if solver.rank[ci] > 0 { reach[ci] } else { 0.0 })
+                .map(|ci| if solver.rank[ci].is_some() { reach[ci] } else { 0.0 })
                 .collect();
             let fast = solver.showdown_values(0, &masked, total, &card, matched, dead);
             let naive = solver.showdown_values_naive(&masked, matched, dead);

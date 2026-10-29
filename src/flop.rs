@@ -15,7 +15,7 @@
 use crate::abstraction::{AbsAction, Abstraction, BetSize};
 use crate::cards::Card;
 use crate::engine::{Hand, Street};
-use crate::eval::eval_hole_board;
+use crate::eval::{eval_hole_board, HandValue};
 use crate::river::showdown_sweep;
 use crate::search::{all_combos, combo_index, NUM_COMBOS};
 use rand::rngs::SmallRng;
@@ -76,7 +76,7 @@ enum Terminal {
 
 struct RunoutTable {
     cards: [Card; 2],
-    rank: Vec<u32>,
+    rank: Vec<Option<HandValue>>,
     sorted: Vec<u32>,
 }
 
@@ -305,7 +305,7 @@ impl<'a> FlopSolver<'a> {
                 b = self.turns[rng.random_range(0..self.turns.len())];
             }
             let board5 = [self.flop[0], self.flop[1], self.flop[2], a, b];
-            let rank: Vec<u32> = self
+            let rank: Vec<Option<HandValue>> = self
                 .combos
                 .iter()
                 .map(|c| {
@@ -313,15 +313,11 @@ impl<'a> FlopSolver<'a> {
                         || c.contains(&b)
                         || self.flop.contains(&c[0])
                         || self.flop.contains(&c[1]);
-                    if blocked {
-                        0
-                    } else {
-                        eval_hole_board(c, &board5)
-                    }
+                    (!blocked).then(|| eval_hole_board(c, &board5))
                 })
                 .collect();
             let mut sorted: Vec<u32> = (0..NUM_COMBOS as u32)
-                .filter(|&ci| rank[ci as usize] > 0)
+                .filter(|&ci| rank[ci as usize].is_some())
                 .collect();
             sorted.sort_by_key(|&ci| rank[ci as usize]);
             tables.push(RunoutTable {

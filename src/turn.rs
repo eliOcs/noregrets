@@ -18,7 +18,7 @@
 use crate::abstraction::{AbsAction, Abstraction, BetSize};
 use crate::cards::Card;
 use crate::engine::{Hand, Street};
-use crate::eval::eval_hole_board;
+use crate::eval::{eval_hole_board, HandValue};
 use crate::river::showdown_sweep;
 use crate::search::{all_combos, combo_index, NUM_COMBOS};
 
@@ -108,7 +108,7 @@ pub struct TurnSolver {
     /// The unseen candidate river cards (board conflicts excluded).
     rivers: Vec<Card>,
     /// Per river index: combo hand ranks and rank-sorted valid combos.
-    rank: Vec<Vec<u32>>,
+    rank: Vec<Vec<Option<HandValue>>>,
     sorted: Vec<Vec<u32>>,
     nodes: Vec<Node>,
     terminals: Vec<Terminal>,
@@ -166,22 +166,16 @@ impl TurnSolver {
         }
 
         let rivers: Vec<Card> = Card::ALL.into_iter().filter(|&c| !on_board[c.index()]).collect();
-        let mut rank: Vec<Vec<u32>> = Vec::with_capacity(rivers.len());
+        let mut rank: Vec<Vec<Option<HandValue>>> = Vec::with_capacity(rivers.len());
         let mut sorted: Vec<Vec<u32>> = Vec::with_capacity(rivers.len());
         for &r in &rivers {
             let board5 = [board[0], board[1], board[2], board[3], r];
-            let rk: Vec<u32> = combos
+            let rk: Vec<Option<HandValue>> = combos
                 .iter()
-                .map(|c| {
-                    if valid(c) && c[0] != r && c[1] != r {
-                        eval_hole_board(c, &board5)
-                    } else {
-                        0
-                    }
-                })
+                .map(|c| (valid(c) && c[0] != r && c[1] != r).then(|| eval_hole_board(c, &board5)))
                 .collect();
             let mut st: Vec<u32> = (0..NUM_COMBOS as u32)
-                .filter(|&ci| rk[ci as usize] > 0)
+                .filter(|&ci| rk[ci as usize].is_some())
                 .collect();
             st.sort_by_key(|&ci| rk[ci as usize]);
             rank.push(rk);

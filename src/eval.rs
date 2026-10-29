@@ -1,9 +1,21 @@
 //! Fast 7-card hand evaluator.
 //!
-//! `eval7` returns a u32 where a higher value is a strictly better hand.
-//! Encoding: category << 20 | up to five 4-bit rank values, most significant first.
+//! `eval7` returns a `HandValue` where a higher value is a strictly better
+//! hand. Encoding: a marker bit (24) | category << 20 | up to five 4-bit
+//! rank values, most significant first.
 
 use crate::cards::Card;
+use std::num::NonZeroU32;
+
+/// The showdown strength of a seven-card hand: comparable, nothing else.
+/// Never zero (the marker bit is always set), so `Option<HandValue>` is
+/// four bytes and `None` marks a combo with no value, such as one blocked
+/// by the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HandValue(NonZeroU32);
+
+/// Set in every packed value; above the category bits, so order is kept.
+const MARKER: u32 = 1 << 24;
 
 /// The category of a made hand, weakest first; the discriminant is the
 /// value's top bits.
@@ -21,14 +33,14 @@ pub enum Category {
 }
 
 #[inline(always)]
-fn pack(cat: Category, ranks: &[u32]) -> u32 {
-    let mut v = (cat as u32) << 20;
+fn pack(cat: Category, ranks: &[u32]) -> HandValue {
+    let mut v = MARKER | (cat as u32) << 20;
     let mut shift = 16;
     for &r in ranks {
         v |= r << shift;
         shift -= 4;
     }
-    v
+    HandValue(NonZeroU32::new(v).expect("the marker bit is set"))
 }
 
 /// Highest rank of a 5-in-a-row within a 13-bit rank mask, or None.
@@ -67,7 +79,7 @@ fn top_ranks(mask: u16, n: usize, out: &mut [u32; 5]) -> usize {
 }
 
 /// Evaluate the best 5-card hand from exactly 7 cards.
-pub fn eval7(cards: &[Card; 7]) -> u32 {
+pub fn eval7(cards: &[Card; 7]) -> HandValue {
     let mut counts = [0u8; 13];
     let mut suit_masks = [0u16; 4];
     for &c in cards {
@@ -171,7 +183,7 @@ pub fn eval7(cards: &[Card; 7]) -> u32 {
 
 /// Convenience: evaluate 2 hole cards + 3..5 board cards (pads via best-of available
 /// is NOT supported; board must have exactly 5 cards for showdown use, or use eval7 directly).
-pub fn eval_hole_board(hole: &[Card; 2], board: &[Card]) -> u32 {
+pub fn eval_hole_board(hole: &[Card; 2], board: &[Card]) -> HandValue {
     debug_assert_eq!(board.len(), 5);
     let cards = [
         hole[0], hole[1], board[0], board[1], board[2], board[3], board[4],
@@ -181,7 +193,7 @@ pub fn eval_hole_board(hole: &[Card; 2], board: &[Card]) -> u32 {
 
 /// The category of a value returned by `eval7`.
 #[cfg(test)]
-pub fn category(value: u32) -> Category {
+pub fn category(value: HandValue) -> Category {
     const ALL: [Category; 9] = [
         Category::HighCard,
         Category::Pair,
@@ -193,7 +205,7 @@ pub fn category(value: u32) -> Category {
         Category::Quads,
         Category::StraightFlush,
     ];
-    ALL[(value >> 20) as usize]
+    ALL[((value.0.get() >> 20) & 0xF) as usize]
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +218,14 @@ mod tests {
     use rand::seq::SliceRandom;
     use rand::SeedableRng;
 
-    fn e(s: &str) -> u32 {
+    #[test]
+    fn a_missing_value_costs_no_space() {
+        assert_eq!(std::mem::size_of::<Option<HandValue>>(), 4);
+        // The weakest seven-card hand still beats "no hand".
+        assert!(Some(e("7c 5d 4h 3s 2c 9d Th").min(e("7c 5d 4h 3s 2c 8d 9h"))) > None);
+    }
+
+    fn e(s: &str) -> HandValue {
         let v = parse_cards(s).unwrap();
         let arr: [Card; 7] = v.try_into().unwrap();
         eval7(&arr)

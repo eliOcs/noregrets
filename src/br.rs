@@ -20,7 +20,7 @@ use crate::abstraction::{AbsAction, TOKEN_STREET_SEP};
 use crate::bot::Policy;
 use crate::cards::{fresh_deck, Card};
 use crate::engine::{Hand, HandConfig, Street};
-use crate::eval::eval_hole_board;
+use crate::eval::{eval_hole_board, HandValue};
 use crate::lbr::{BotRange, Lbr};
 use crate::river::showdown_sweep;
 use crate::search::{all_combos, NUM_COMBOS};
@@ -40,7 +40,7 @@ pub struct SubgameBr<'a> {
     rivers: Vec<Card>,
     /// Per river index (single entry on a complete board): combo hand ranks
     /// and rank-sorted valid combos for the O(N) showdown sweep.
-    rank: Vec<Vec<u32>>,
+    rank: Vec<Vec<Option<HandValue>>>,
     sorted: Vec<Vec<u32>>,
     /// Bot bucket per combo on the current (pre-chance) board; 0 for combos
     /// blocked by the board.
@@ -81,19 +81,16 @@ impl SubgameBr<'_> {
             policy.abs.bucket(*combo, b, &mut rng)
         };
 
-        let rank_table = |board5: &[Card; 5]| -> (Vec<u32>, Vec<u32>) {
-            let rk: Vec<u32> = combos
+        let rank_table = |board5: &[Card; 5]| -> (Vec<Option<HandValue>>, Vec<u32>) {
+            let rk: Vec<Option<HandValue>> = combos
                 .iter()
                 .map(|c| {
-                    if valid(c) && !board5[3..].contains(&c[0]) && !board5[3..].contains(&c[1]) {
-                        eval_hole_board(c, board5)
-                    } else {
-                        0
-                    }
+                    let live = valid(c) && !board5[3..].contains(&c[0]) && !board5[3..].contains(&c[1]);
+                    live.then(|| eval_hole_board(c, board5))
                 })
                 .collect();
             let mut st: Vec<u32> = (0..NUM_COMBOS as u32)
-                .filter(|&ci| rk[ci as usize] > 0)
+                .filter(|&ci| rk[ci as usize].is_some())
                 .collect();
             st.sort_by_key(|&ci| rk[ci as usize]);
             (rk, st)

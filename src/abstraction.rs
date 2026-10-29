@@ -937,7 +937,7 @@ fn apply_perm(board: &[Card], perm: &SuitPerm) -> Vec<Card> {
 /// card-removal-compatible opponent combos (uniform opponent — the same
 /// estimand as `equity_vs_random`, exactly).
 fn build_river_table(board: &[Card], nb: u16) -> Vec<u16> {
-    use crate::eval::eval_hole_board;
+    use crate::eval::{eval_hole_board, HandValue};
     use crate::search::NUM_COMBOS;
     let combos = crate::search::all_combos();
     let board5 = [board[0], board[1], board[2], board[3], board[4]];
@@ -945,18 +945,18 @@ fn build_river_table(board: &[Card], nb: u16) -> Vec<u16> {
     for &c in board {
         on_board[c.index()] = true;
     }
-    let rank: Vec<u32> = combos
+    let rank: Vec<Option<HandValue>> = combos
         .iter()
         .map(|c| {
             if on_board[c[0].index()] || on_board[c[1].index()] {
-                0
+                None
             } else {
-                eval_hole_board(c, &board5)
+                Some(eval_hole_board(c, &board5))
             }
         })
         .collect();
     let mut sorted: Vec<u32> = (0..NUM_COMBOS as u32)
-        .filter(|&ci| rank[ci as usize] > 0)
+        .filter(|&ci| rank[ci as usize].is_some())
         .collect();
     sorted.sort_unstable_by_key(|&ci| rank[ci as usize]);
 

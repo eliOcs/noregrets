@@ -7,7 +7,7 @@
 //! - Min-raise rules, big-blind option, heads-up blind order.
 
 use crate::cards::Card;
-use crate::eval::eval_hole_board;
+use crate::eval::{eval_hole_board, HandValue};
 use rand::rngs::SmallRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -276,9 +276,9 @@ impl Hand {
         } else {
             // Showdown across side-pot layers.
             debug_assert_eq!(self.board_len, 5);
-            let mut strength = [0u32; MAX_PLAYERS];
+            let mut strength: [Option<HandValue>; MAX_PLAYERS] = [None; MAX_PLAYERS];
             for &p in &live {
-                strength[p] = eval_hole_board(&self.holes[p], &self.board);
+                strength[p] = Some(eval_hole_board(&self.holes[p], &self.board));
             }
 
             let mut levels: Vec<u32> = self.hand_commit[..self.n]

@@ -20,7 +20,7 @@ use crate::abstraction::AbsAction;
 use crate::bot::Policy;
 use crate::cards::{fresh_deck, Card};
 use crate::engine::{Hand, HandConfig, PlayerAction};
-use crate::eval::eval_hole_board;
+use crate::eval::{eval_hole_board, HandValue};
 use crate::search::{all_combos, NUM_COMBOS};
 use crate::table::Table;
 use rand::rngs::SmallRng;
@@ -378,7 +378,8 @@ impl Lbr<'_> {
                 taken[stock[k].index()] = true;
             }
             let hero = eval_hole_board(&hole, &full);
-            let mut best_opp = 0u32;
+            // None until an opponent is dealt; any hand beats no hand.
+            let mut best_opp: Option<HandValue> = None;
             let mut ties = 0u32;
             for cum in &cums {
                 // Rejection-sample a combo not colliding with dealt cards.
@@ -395,7 +396,7 @@ impl Lbr<'_> {
                 let Some(c) = combo else { continue 'outer };
                 taken[c[0].index()] = true;
                 taken[c[1].index()] = true;
-                let v = eval_hole_board(&c, &full);
+                let v = Some(eval_hole_board(&c, &full));
                 if v > best_opp {
                     best_opp = v;
                     ties = 1;
@@ -403,9 +404,9 @@ impl Lbr<'_> {
                     ties += 1;
                 }
             }
-            score += if hero > best_opp {
+            score += if Some(hero) > best_opp {
                 1.0
-            } else if hero == best_opp {
+            } else if Some(hero) == best_opp {
                 1.0 / (ties as f64 + 1.0)
             } else {
                 0.0
