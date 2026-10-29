@@ -17,8 +17,12 @@
 //! The file is memory-mapped, so only pages that lookups touch become
 //! resident, and they are file-backed: the kernel can evict them instead of
 //! needing the whole table to fit in RAM.
+//!
+//! A blueprint may carry its flop/turn bucket table at the end of the file
+//! (`buckets` sorted u64 canonical keys, then as many u16 buckets), read in
+//! place the same way, so serving needs one file and no table in memory.
 
-use crate::abstraction::{AbsConfig, Centroids};
+use crate::abstraction::{AbsConfig, BucketTable, CanonTable, Centroids};
 use crate::cfr::{make_key, Blueprint};
 use crate::mirror::Strategies;
 use memmap2::Mmap;
@@ -26,7 +30,9 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::io::Write;
 
-const MAGIC: &[u8; 8] = b"NRCOMP02";
+const MAGIC: &[u8; 8] = b"NRCOMP03";
+/// The format before embedded bucket tables; still read.
+const MAGIC_V2: &[u8; 8] = b"NRCOMP02";
 const BLOCK: usize = 64;
 /// Index entry: data offset u64, first-key offset u32, first-key length u8.
 const INDEX_ENTRY: usize = 13;
@@ -41,11 +47,24 @@ pub struct Header {
     pub blocks: u64,
     /// Bytes of first-key blob after the index entries.
     pub first_keys: u64,
+    /// Entries in the embedded bucket table (0: none).
+    pub buckets: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct HeaderV2 {
+    iterations: u64,
+    num_players: usize,
+    abs_cfg: AbsConfig,
+    centroids: Option<Centroids>,
+    records: u64,
+    blocks: u64,
+    first_keys: u64,
 }
 
 pub struct CompactBlueprint {
     pub header: Header,
-    mmap: Mmap,
+    mmap: std::sync::Arc<Mmap>,
     /// Byte offsets of the index entries (data offset u64, first-key
     /// offset u32, first-key length u8), the first-key blob and the data.
     index_at: usize,
@@ -58,7 +77,7 @@ pub fn is_compact(path: &str) -> bool {
     let mut magic = [0u8; 8];
     std::fs::File::open(path)
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
-        .is_ok_and(|_| &magic == MAGIC)
+        .is_ok_and(|_| &magic == MAGIC || &magic == MAGIC_V2)
 }
 
 /// Round each action's share to the nearest of `steps` steps and store the
@@ -83,9 +102,15 @@ pub fn quantize(weights: &[f32], steps: u8) -> Option<Vec<u8>> {
 }
 
 /// Write `bp` in the compact format, with strategies in `steps` steps (see
-/// [`quantize`]). Infosets without a strategy are dropped; lookups treat
-/// them as unseen, as the hash map does.
-pub fn write(bp: &Blueprint, path: &str, steps: u8) -> std::io::Result<u64> {
+/// [`quantize`]) and, if given, its bucket table, which must have been
+/// built for `bp`'s abstraction. Infosets without a strategy are dropped;
+/// lookups treat them as unseen, as the hash map does.
+pub fn write(bp: &Blueprint, path: &str, steps: u8, table: Option<&BucketTable>) -> std::io::Result<u64> {
+    if let Some(t) = table {
+        if !t.matches(&bp.abs_cfg) || t.centroids != bp.centroids {
+            return Err(std::io::Error::other("the bucket table was built for a different abstraction"));
+        }
+    }
     let mut entries: Vec<(&[u8], Vec<u8>)> = bp
         .strategies
         .iter()
@@ -123,6 +148,7 @@ pub fn write(bp: &Blueprint, path: &str, steps: u8) -> std::io::Result<u64> {
         records: entries.len() as u64,
         blocks: index.len() as u64,
         first_keys: first_keys.len() as u64,
+        buckets: table.map_or(0, |t| t.entries.len() as u64),
     })
     .map_err(std::io::Error::other)?;
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -136,6 +162,16 @@ pub fn write(bp: &Blueprint, path: &str, steps: u8) -> std::io::Result<u64> {
     }
     f.write_all(&first_keys)?;
     f.write_all(&data)?;
+    if let Some(t) = table {
+        let mut entries = t.entries.clone();
+        entries.sort_unstable();
+        for (k, _) in &entries {
+            f.write_all(&k.to_le_bytes())?;
+        }
+        for (_, b) in &entries {
+            f.write_all(&b.to_le_bytes())?;
+        }
+    }
     f.flush()?;
     Ok(entries.len() as u64)
 }
@@ -146,24 +182,48 @@ impl CompactBlueprint {
         // SAFETY: the blueprint file is written once and never modified
         // while served.
         let mmap = unsafe { Mmap::map(&file)? };
-        if mmap.len() < 16 || &mmap[..8] != MAGIC {
+        if mmap.len() < 16 || (&mmap[..8] != MAGIC && &mmap[..8] != MAGIC_V2) {
             return Err(std::io::Error::other("not a compact blueprint"));
         }
         let header_len = u64::from_le_bytes(mmap[8..16].try_into().unwrap()) as usize;
-        let header: Header =
-            bincode::deserialize(&mmap[16..16 + header_len]).map_err(std::io::Error::other)?;
+        let bytes = mmap.get(16..16 + header_len).ok_or_else(|| std::io::Error::other("truncated compact blueprint"))?;
+        let header: Header = if &mmap[..8] == MAGIC {
+            bincode::deserialize(bytes).map_err(std::io::Error::other)?
+        } else {
+            let h: HeaderV2 = bincode::deserialize(bytes).map_err(std::io::Error::other)?;
+            Header {
+                iterations: h.iterations,
+                num_players: h.num_players,
+                abs_cfg: h.abs_cfg,
+                centroids: h.centroids,
+                records: h.records,
+                blocks: h.blocks,
+                first_keys: h.first_keys,
+                buckets: 0,
+            }
+        };
         let index_at = 16 + header_len;
         let keys_at = index_at + INDEX_ENTRY * header.blocks as usize;
         let data_at = keys_at + header.first_keys as usize;
-        if data_at > mmap.len() {
+        if data_at + BUCKET_ENTRY * header.buckets as usize > mmap.len() {
             return Err(std::io::Error::other("truncated compact blueprint"));
         }
         Ok(CompactBlueprint {
             header,
-            mmap,
+            mmap: std::sync::Arc::new(mmap),
             index_at,
             keys_at,
             data_at,
+        })
+    }
+
+    /// The embedded bucket table, if the file carries one.
+    pub fn bucket_table(&self) -> Option<std::sync::Arc<dyn CanonTable>> {
+        let n = self.header.buckets as usize;
+        (n > 0).then(|| {
+            let keys_at = self.mmap.len() - BUCKET_ENTRY * n;
+            std::sync::Arc::new(EmbeddedBuckets { mmap: self.mmap.clone(), keys_at, buckets_at: keys_at + 8 * n, n })
+                as std::sync::Arc<dyn CanonTable>
         })
     }
 
@@ -221,6 +281,37 @@ impl CompactBlueprint {
     }
 }
 
+/// Bytes per embedded bucket-table entry: a u64 key and a u16 bucket.
+const BUCKET_ENTRY: usize = 10;
+
+/// A compact blueprint's bucket table, read in place: binary search over
+/// the sorted keys, then the bucket at the same position.
+struct EmbeddedBuckets {
+    mmap: std::sync::Arc<Mmap>,
+    keys_at: usize,
+    buckets_at: usize,
+    n: usize,
+}
+
+impl CanonTable for EmbeddedBuckets {
+    fn get(&self, ckey: u64) -> Option<u16> {
+        let key = |i: usize| u64::from_le_bytes(self.mmap[self.keys_at + 8 * i..][..8].try_into().unwrap());
+        let (mut lo, mut hi) = (0, self.n);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match key(mid).cmp(&ckey) {
+                Ordering::Less => lo = mid + 1,
+                Ordering::Greater => hi = mid,
+                Ordering::Equal => {
+                    let at = self.buckets_at + 2 * mid;
+                    return Some(u16::from_le_bytes(self.mmap[at..at + 2].try_into().unwrap()));
+                }
+            }
+        }
+        None
+    }
+}
+
 impl Strategies for CompactBlueprint {
     fn get(&self, bucket: u16, hist: &[u8]) -> Option<std::borrow::Cow<'_, [f32]>> {
         self.lookup(&make_key(bucket, hist))
@@ -258,13 +349,102 @@ mod tests {
     }
 
     fn roundtrip(bp: &Blueprint, name: &str) -> CompactBlueprint {
+        roundtrip_with(bp, name, None)
+    }
+
+    fn roundtrip_with(bp: &Blueprint, name: &str, table: Option<&BucketTable>) -> CompactBlueprint {
         let path = std::env::temp_dir().join(format!("nr-compact-{name}-{}.bin", std::process::id()));
         let path = path.to_str().unwrap();
-        write(bp, path, 255).unwrap();
+        write(bp, path, 255, table).unwrap();
         assert!(is_compact(path));
         let c = CompactBlueprint::open(path).unwrap();
         std::fs::remove_file(path).unwrap();
         c
+    }
+
+    fn table(entries: Vec<(u64, u16)>) -> BucketTable {
+        BucketTable { cfg: AbsConfig::default(), centroids: None, entries }
+    }
+
+    #[test]
+    fn an_embedded_bucket_table_reads_back() {
+        let bp = blueprint(3_000, 5);
+        let mut rng = SmallRng::seed_from_u64(6);
+        let mut entries: Vec<(u64, u16)> = (0..20_000).map(|_| (rng.random::<u64>() >> 1, rng.random_range(0..12))).collect();
+        entries.sort_unstable();
+        entries.dedup_by_key(|e| e.0);
+        let c = roundtrip_with(&bp, "table", Some(&table(entries.clone())));
+        for (key, weights) in &bp.strategies {
+            assert_eq!(c.lookup(key), Some(quantize(weights, 255).unwrap().as_slice()));
+        }
+        let t = c.bucket_table().expect("an embedded table");
+        for &(k, b) in &entries {
+            assert_eq!(t.get(k), Some(b));
+        }
+        for _ in 0..5_000 {
+            let k = rng.random::<u64>() >> 1;
+            assert_eq!(t.get(k), entries.binary_search_by_key(&k, |e| e.0).ok().map(|i| entries[i].1));
+        }
+        assert!(roundtrip(&bp, "no-table").bucket_table().is_none());
+    }
+
+    #[test]
+    fn bucketing_reads_the_embedded_table_for_every_suit_variant() {
+        use crate::abstraction::{canonical_cards_key, Abstraction};
+        // A deliberately wrong bucket shows the table, not Monte Carlo,
+        // answered: hole 2c 3d, board 4h 7c 9h, and the same with clubs and
+        // diamonds swapped.
+        let (hole, board) = ([0u8, 5], [10u8, 20, 30]);
+        let c = roundtrip_with(&blueprint(100, 7), "abs", Some(&table(vec![(canonical_cards_key(hole, &board), 11)])));
+        let abs = Abstraction::with_centroids(AbsConfig::default(), None).with_table(c.bucket_table().unwrap());
+        let mut rng = SmallRng::seed_from_u64(8);
+        assert_eq!(abs.bucket(hole, &board, &mut rng), 11);
+        assert_eq!(abs.bucket([1, 4], &[10, 21, 30], &mut rng), 11);
+        assert_eq!(abs.canon_len(), 0, "table hits are not copied into the cache");
+    }
+
+    #[test]
+    fn a_table_for_another_abstraction_is_refused() {
+        let bp = blueprint(100, 9);
+        let mut t = table(vec![(1, 1)]);
+        t.cfg.postflop_buckets += 1;
+        let path = std::env::temp_dir().join(format!("nr-compact-refused-{}.bin", std::process::id()));
+        assert!(write(&bp, path.to_str().unwrap(), 255, Some(&t)).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn version_2_files_still_open() {
+        let bp = blueprint(2_000, 10);
+        let path = std::env::temp_dir().join(format!("nr-compact-v2-{}.bin", std::process::id()));
+        let path = path.to_str().unwrap();
+        write(&bp, path, 255, None).unwrap();
+        // Rewrite the header as version 2 wrote it, without the table count.
+        let bytes = std::fs::read(path).unwrap();
+        let len = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+        let h: Header = bincode::deserialize(&bytes[16..16 + len]).unwrap();
+        let v2 = bincode::serialize(&HeaderV2 {
+            iterations: h.iterations,
+            num_players: h.num_players,
+            abs_cfg: h.abs_cfg,
+            centroids: h.centroids,
+            records: h.records,
+            blocks: h.blocks,
+            first_keys: h.first_keys,
+        })
+        .unwrap();
+        let mut old = MAGIC_V2.to_vec();
+        old.extend_from_slice(&(v2.len() as u64).to_le_bytes());
+        old.extend_from_slice(&v2);
+        old.extend_from_slice(&bytes[16 + len..]);
+        std::fs::write(path, old).unwrap();
+        assert!(is_compact(path));
+        let c = CompactBlueprint::open(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(c.bucket_table().is_none());
+        for (key, weights) in &bp.strategies {
+            assert_eq!(c.lookup(key), Some(quantize(weights, 255).unwrap().as_slice()));
+        }
     }
 
     #[test]

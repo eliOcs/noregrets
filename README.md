@@ -142,6 +142,8 @@ default EMD k-means abstraction and stores it with its centroids:
 ./target/release/pluribus train --iters 200000000 --bucket-table buckets.bin
 ```
 
+`compact --bucket-table` stores it inside a serving blueprint (see `serve`).
+
 Profiling showed ~70% of training time in Monte Carlo equity rollouts on
 bucket-cache misses; with the table preloaded the trainer runs 2.7x faster
 (248k vs 92k traversals/s on 16 cores) and every bucket value is exactly
@@ -331,7 +333,7 @@ preflop-only blueprint, merged into the base for serving:
 
 ```bash
 pluribus merge-preflop --base it-800m.bin --preflop r800-sw.bin --out it-800m-r.bin
-pluribus compact --blueprint it-800m-r.bin --out it-800m-r.nrc
+pluribus compact --blueprint it-800m-r.bin --bucket-table buckets.bin --out it-800m-r.nrc
 ```
 
 Experiments can skip the merge with `--blueprint BASE+PREFLOP` (any
@@ -358,16 +360,22 @@ At 800M, playing the 100bb blueprint at 80bb costs about −110 mbb/hand
 and at 120bb nothing measurable (BASELINES, 28 Oct 2026).
 
 `--search` re-solves postflop decisions online (`--search-ms`, default 75;
-`--search-iters`, default 20,000; `--bucket-table` prefills the card
-abstraction). Ranges are rebuilt from each request's actions, the solve is
-rooted at the current decision, and answers carry `"source":"search"`.
-Search reads strategies through the same store as the blueprint answers,
-so compact blueprints stay memory-mapped: the 100bb blueprint with its
-re-solved preflop is one 1.15 GB file, and with the 80bb one beside it
-the process peaks at 1.8 GB resident with search on.
+`--search-iters`, default 20,000). Ranges are rebuilt from each request's
+actions, the solve is rooted at the current decision, and answers carry
+`"source":"search"`. Search reads strategies through the same store as
+the blueprint answers, so compact blueprints stay memory-mapped.
+
+Search buckets every hand in each range, so it needs the flop/turn bucket
+table: without one, multiway flop searches spend their 75 ms on Monte
+Carlo bucketing instead of iterations. `compact --bucket-table` stores the
+table in the blueprint file, read in place like the strategies (blueprint
+answers use it too); `serve --bucket-table` instead
+loads a separate table into memory, which costs about 700 MB more. The
+100bb blueprint with its re-solved preflop and its table is one 1.30 GB
+file, and serves with search at 83 ms p99 and 779 MB peak resident:
 
 ```bash
-pluribus serve --blueprint it-800m-r.nrc --search --bucket-table buckets.bin
+pluribus serve --blueprint it-800m-r.nrc --search
 ```
 
 Preflop answers come from the blueprint, except facing an all-in that a

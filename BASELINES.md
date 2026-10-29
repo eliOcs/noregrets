@@ -1872,3 +1872,24 @@ with the current rounding, and within one 1/255 step of the gated pair
 (6.8% of decisions differ, max 0.0039): `it-800m.nrc` predates the
 per-action rounding of 6cd5190, which keeps actions the old
 largest-remainder rounding dropped.
+
+### The bucket table inside the served blueprint
+
+`serve --search` without a bucket table, 200 self-played hands with
+preflop calls forced 70% of the time: overall p99 93ms against 83ms with
+`--bucket-table`, but multiway flop searches hit the 75ms cap (p50 76ms
+against 24ms with the table, which finishes its 20k iterations), so
+search would run fewer iterations exactly where it gained most. Loading
+the separate table cost memory instead: peak resident 1,389 MB with it,
+623 MB without (the 15.2M entries become a hash map).
+
+Compact format 3 stores the table at the end of the blueprint as sorted
+keys and buckets, binary-searched in place; table hits are not copied
+into the caches. `compact --blueprint it-800m-r.bin --bucket-table
+buckets.bin`: `it-800m-r.nrc`, 1,303,812,141 bytes, sha256 `d30aec1f…`.
+Against `it-800m-r.nrc` (format 2) with `--bucket-table`: identical
+answers over 15,101 blueprint decisions and over 1,493 decisions with
+search (582 searched; one thread, 2,000 iterations, no time cap). At 75ms,
+300 hands each: p99 83.1ms against 83.7ms, multiway flop p50 31ms against
+27ms (one 119ms decision, the table's pages read cold), peak resident
+779 MB against 1,310 MB.

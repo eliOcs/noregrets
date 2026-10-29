@@ -334,6 +334,13 @@ fn train_street_centroids(
     kmedians(&points, cfg.postflop_buckets as usize, 25, seed)
 }
 
+/// A read-only flop/turn bucket table keyed by suit-canonical (hole,
+/// board) key, such as the one a compact blueprint carries. It holds the
+/// values the lazy path computes, so attaching it changes only speed.
+pub trait CanonTable: Send + Sync {
+    fn get(&self, ckey: u64) -> Option<u16>;
+}
+
 pub struct Abstraction {
     pub cfg: AbsConfig,
     pub centroids: Option<Centroids>,
@@ -351,6 +358,9 @@ pub struct Abstraction {
     river_boards: DashMap<u64, std::sync::Arc<Vec<u16>>, ahash::RandomState>,
     /// Previous-round context, required when `centroids.is_strategic()`.
     strat: Option<StratCtx>,
+    /// Read-only bucket table consulted on exact-cache misses. Its hits are
+    /// not copied into the caches, so memory stays bounded by the table.
+    table: Option<std::sync::Arc<dyn CanonTable>>,
 }
 
 impl Abstraction {
@@ -368,6 +378,7 @@ impl Abstraction {
             canon: DashMap::with_hasher(ahash::RandomState::new()),
             river_boards: DashMap::with_hasher(ahash::RandomState::new()),
             strat: None,
+            table: None,
         }
     }
 
@@ -441,6 +452,12 @@ impl Abstraction {
         for &(k, b) in entries {
             self.canon.insert(k, b);
         }
+    }
+
+    /// Attach a read-only bucket table computed for this abstraction.
+    pub fn with_table(mut self, table: std::sync::Arc<dyn CanonTable>) -> Self {
+        self.table = Some(table);
+        self
     }
 
     /// Attach the previous-round blueprint context needed to evaluate
@@ -562,6 +579,9 @@ impl Abstraction {
         }
         // Miss: fold suit-isomorphic variants onto one canonical entry.
         let ckey = canonical_cards_key(hole, board);
+        if let Some(b) = self.table.as_ref().and_then(|t| t.get(ckey)) {
+            return b;
+        }
         if let Some(b) = self.canon.get(&ckey) {
             let b = *b;
             if self.cache.len() < self.cfg.cache_cap {

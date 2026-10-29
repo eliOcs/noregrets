@@ -11,7 +11,6 @@
 
 use crate::abstraction::{AbsAction, Abstraction};
 use crate::cards::Card;
-use crate::cfr::Blueprint;
 use crate::engine::{Hand, MAX_PLAYERS};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -297,7 +296,7 @@ mod tests {
     use super::*;
     use crate::abstraction::{preflop_bucket, AbsConfig};
     use crate::cards::{fresh_deck, parse_cards};
-    use crate::cfr::make_key;
+    use crate::cfr::{make_key, Blueprint};
     use crate::engine::HandConfig;
     use std::collections::{HashMap, HashSet};
 
@@ -308,7 +307,6 @@ mod tests {
     #[test]
     fn off_model_actions_widen_instead_of_concentrating() {
         use crate::abstraction::{preflop_bucket, AbsConfig, Abstraction};
-        use crate::cfr::Blueprint;
         let abs = Abstraction::new(AbsConfig {
             postflop_buckets: 6,
             equity_rollouts: 30,

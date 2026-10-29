@@ -276,7 +276,8 @@ enum Cmd {
         #[arg(long, default_value_t = 20_000)]
         search_iters: u64,
         /// Precomputed flop/turn bucket table to prefill the card
-        /// abstraction (with --search; avoids cold-cache bucketing).
+        /// abstraction (with --search; avoids cold-cache bucketing). Not
+        /// needed for a compact blueprint that includes its table.
         #[arg(long)]
         bucket_table: Option<String>,
     },
@@ -291,6 +292,11 @@ enum Cmd {
         /// action; 255 keeps the strategy as trained.
         #[arg(long, default_value_t = 255, value_parser = clap::value_parser!(u8).range(1..))]
         steps: u8,
+        /// Store this flop/turn bucket table (from `bucket-table`, built for
+        /// the blueprint's abstraction) in the file, so serving reads it in
+        /// place instead of computing buckets or loading a separate table.
+        #[arg(long)]
+        bucket_table: Option<String>,
     },
     /// Measure what playing blueprint A at stacks it was not trained for
     /// costs, against a field of blueprint B trained at those stacks.
@@ -1103,11 +1109,15 @@ fn main() {
             serve::serve(&served);
         }
 
-        Cmd::Compact { blueprint, out, steps } => {
+        Cmd::Compact { blueprint, out, steps, bucket_table } => {
             let t0 = std::time::Instant::now();
             let bp = Blueprint::load(&blueprint)
                 .unwrap_or_else(|e| die(&format!("cannot load blueprint '{blueprint}': {e}")));
-            let records = compact::write(&bp, &out, steps)
+            let table = bucket_table.as_ref().map(|path| {
+                abstraction::BucketTable::load(path)
+                    .unwrap_or_else(|e| die(&format!("cannot load bucket table '{path}': {e}")))
+            });
+            let records = compact::write(&bp, &out, steps, table.as_ref())
                 .unwrap_or_else(|e| die(&format!("cannot write '{out}': {e}")));
             let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             println!(
@@ -2043,31 +2053,36 @@ fn load_bot(path: &str, stack: u32) -> (mirror::Bot, HandConfig) {
         let strategies = Box::new(mirror::PreflopOverlay { preflop, base: bot.strategies });
         return (mirror::Bot { abs: bot.abs, strategies }, cfg);
     }
-    let (strategies, players, abs_cfg, centroids): (Box<dyn mirror::Strategies>, _, _, _) =
+    let (strategies, players, abs_cfg, centroids, table): (Box<dyn mirror::Strategies>, _, _, _, _) =
         if compact::is_compact(path) {
             let c = compact::CompactBlueprint::open(path).unwrap_or_else(|e| fail(e));
             let (n, cfg, cents) = (c.header.num_players, c.header.abs_cfg.clone(), c.header.centroids.clone());
-            (Box::new(c), n, cfg, cents)
+            let table = c.bucket_table();
+            (Box::new(c), n, cfg, cents, table)
         } else {
             let bp = Blueprint::load(path).unwrap_or_else(|e| fail(e));
             let (n, cfg, cents) = (bp.num_players, bp.abs_cfg.clone(), bp.centroids.clone());
-            (Box::new(bp), n, cfg, cents)
+            (Box::new(bp), n, cfg, cents, None)
         };
     if centroids.as_ref().is_some_and(|c| c.is_strategic()) {
         die("strategic-clustering blueprints are not supported here");
     }
     eprintln!(
-        "{path}: {} infosets, {players} players, {:?} menu",
+        "{path}: {} infosets, {players} players, {:?} menu{}",
         strategies.len(),
-        abs_cfg.menu
+        abs_cfg.menu,
+        if table.is_some() { ", bucket table included" } else { "" }
     );
     let cfg = HandConfig {
         num_players: players,
         stack,
         ..HandConfig::default()
     };
-    let abs = Arc::new(Abstraction::with_centroids(abs_cfg, centroids));
-    (mirror::Bot { abs, strategies }, cfg)
+    let mut abs = Abstraction::with_centroids(abs_cfg, centroids);
+    if let Some(t) = table {
+        abs = abs.with_table(t);
+    }
+    (mirror::Bot { abs: Arc::new(abs), strategies }, cfg)
 }
 
 fn die(msg: &str) -> ! {
