@@ -672,6 +672,12 @@ pub(crate) fn showdown_sweep(
     let mut vals = vec![0.0; NUM_COMBOS];
     let mut below_total = 0.0f64;
     let mut below_card = [0.0f64; 52];
+    // Per-card weight of the current rank group, and the cards it touched:
+    // a group holds a few combos, so only those cards are added to
+    // `below_card` and cleared, not all 52 (the same sums, in the same order).
+    let mut grp_card = [0.0f64; 52];
+    let mut touched = [false; 52];
+    let mut touched_cards = [0usize; 52];
 
     let mut i = 0;
     while i < sorted.len() {
@@ -679,15 +685,21 @@ pub(crate) fn showdown_sweep(
         let r = rank[sorted[i] as usize];
         let mut j = i;
         let mut grp_total = 0.0f64;
-        let mut grp_card = [0.0f64; 52];
+        let mut n_touched = 0;
         while j < sorted.len() && rank[sorted[j] as usize] == r {
             let ci = sorted[j] as usize;
             let w = reach_opp[ci];
             if w > 0.0 {
                 grp_total += w;
-                let c = combos[ci];
-                grp_card[c[0].index()] += w;
-                grp_card[c[1].index()] += w;
+                for c in combos[ci] {
+                    let c = c.index();
+                    if !touched[c] {
+                        touched[c] = true;
+                        touched_cards[n_touched] = c;
+                        n_touched += 1;
+                    }
+                    grp_card[c] += w;
+                }
             }
             j += 1;
         }
@@ -703,8 +715,10 @@ pub(crate) fn showdown_sweep(
             vals[ci] = weaker * win_v + tie * tie_v + stronger * lose_v;
         }
         below_total += grp_total;
-        for c in 0..52 {
+        for &c in &touched_cards[..n_touched] {
             below_card[c] += grp_card[c];
+            grp_card[c] = 0.0;
+            touched[c] = false;
         }
         i = j;
     }

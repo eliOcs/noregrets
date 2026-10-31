@@ -2042,3 +2042,34 @@ iterations/s, 23 GB peak RSS against 7 GB, 2.6 GB against 0.7 GB saved.
 Stored strategies preflop / flop / turn / river: 38.7M / 14.9M / 7.2M /
 4.5M against 10.7M / 4.4M / 2.3M / 1.3M. Too large for 30M locally; not
 yet gated.
+
+## 2026-10-31 — Turn solver speed: f32 NEGATIVE, showdown sweep +7%
+
+`cargo test --release bench_turn_solver -- --ignored --nocapture` times
+the exact turn+river solver on 100bb heads-up turns (Pluribus menu,
+fixed non-uniform ranges, one thread, 12-core dev box) and writes root
+strategies and values to `$TURN_BENCH_OUT` for comparing builds.
+
+| Tree | nodes | f64 | f32 | f64 + sweep fix |
+|---|---:|---:|---:|---:|
+| single-raised pot, full menu (20 it) | 7,124 | 212 ms/it | 194 | 198 |
+| limped pot, full menu (20 it) | 8,660 | 256 | 234 | 238 |
+| single-raised pot, served slim menu (200 it) | 196 | 6.07 | 5.55 | 5.54 |
+
+The cost per node is the same with 4 MB of regrets (in cache) as with
+208 MB, so the solver is not bound by memory traffic, and halving it
+with f32 gains 9%. f32 also moves the solution: mean strategy difference
+0.02–0.04%, max 0.3–3.6% (growing with iterations), root values up to
+6.9 chips apart. NEGATIVE: not adopted.
+
+Time per iteration (f64, full menu / slim): showdowns 34% / 39%, regret
+matching 22% / 16%, fold terminals 14% / 8%, regret updates 7% / 6%, the
+rest (river card removal, reach products, allocation) 22% / 31%.
+`showdown_sweep` zeroed and added a 52-card array for every rank group;
+it now touches only the group's cards, with the same sums in the same
+order: bench output byte-identical, 7–9% faster. The sweep is shared with
+the river solver, `br` and the flop solver.
+
+The full-menu turn needs ~4 ms per iteration to run ~20 iterations in
+75 ms, about 50x from here; these CPU changes are worth more iterations
+on the slim tree, not the full menu.

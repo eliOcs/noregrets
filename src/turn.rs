@@ -710,6 +710,55 @@ mod tests {
         })
     }
 
+    /// Solver speed on three 100bb heads-up turns, with each tree's root
+    /// strategies and values written to `$TURN_BENCH_OUT` (if set) so builds
+    /// can be compared. `cargo test --release bench_turn_solver -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_turn_solver() {
+        use crate::abstraction::BET_SIZES;
+        use std::fmt::Write as _;
+        let all: Vec<BetSize> = (0..BET_SIZES.len() as u8).map(|i| BetSize::new(i).unwrap()).collect();
+        let abs = Abstraction::new(AbsConfig { cache_cap: 1000, ..AbsConfig::default() });
+        let front = parse_cards("As Ks 2c 7d Qs Js Ts 3h 4d").unwrap();
+        let cfg = HandConfig::new(Players::TWO, Stack::new(10_000).unwrap());
+        // A range that is not uniform, so card removal and mixing matter.
+        let range: Vec<f64> = (0..NUM_COMBOS).map(|ci| 0.2 + (ci * 7919 % 101) as f64 / 101.0).collect();
+        let mut out = String::new();
+        for (name, raise, keep, iters) in [
+            ("single-raised pot, full menu", true, &all[..], 20),
+            ("limped pot, full menu", false, &all[..], 20),
+            ("single-raised pot, served slim menu", true, &[BetSize::P75][..], 200),
+        ] {
+            let mut h = Hand::new(&cfg, 0, Deck::with_front(&front).unwrap());
+            if raise {
+                h.apply(abs.concrete(&h, AbsAction::Bet(BetSize::POT)));
+            }
+            while h.street() != Street::Turn {
+                h.apply(PlayerAction::CheckCall);
+            }
+            let mut s = TurnSolver::build(&h, &abs, [&range, &range], keep).unwrap();
+            let t0 = std::time::Instant::now();
+            s.solve(iters, u64::MAX);
+            let ms = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+            let mem: usize = s.nodes.iter().map(|n| n.regret.len() * std::mem::size_of_val(&n.regret[0])).sum();
+            eprintln!("{name}: {} nodes, regrets {:.0} MB, {ms:.2} ms/iteration", s.nodes.len(), mem as f64 / 1e6);
+            let _ = writeln!(out, "# {name}");
+            for c in &s.combos {
+                if let Some((_, p)) = s.root_strategy(*c) {
+                    let _ = writeln!(out, "s {} {:?}", c.index(), p);
+                }
+            }
+            for u in 0..2 {
+                let _ = writeln!(out, "v{u} {:?}", s.root_values(u));
+            }
+        }
+        if let Ok(path) = std::env::var("TURN_BENCH_OUT") {
+            std::fs::write(path, out).unwrap();
+        }
+    }
+
     /// Heads-up hand checked to p1's turn decision on board Qs Js Ts 3h.
     /// Deck: p0 = As Ks (royal already made), p1 = 2c 7d.
     fn turn_p1_to_act() -> (Hand, Abstraction) {
