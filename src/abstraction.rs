@@ -158,11 +158,19 @@ impl Default for AbsConfig {
 /// - `PluribusFinePre`: `Pluribus` postflop plus a fine preflop menu
 ///   (7 opens, 5 three-bet sizes, 3 four-bet sizes), because Pluribus
 ///   never searches preflop and so made that round's abstraction fine.
+/// - `Uniform`: the same five sizes, 33% / 50% / 100% / 150% / 200%
+///   (+ all-in), at every decision on every street and at every raise
+///   count. Sizes below the minimum raise are lifted to it, sizes at or
+///   above the stack become the all-in, and duplicates are dropped, so
+///   deep in a raise war the menu shrinks to what the stacks allow.
+///
+/// Variants are stored by position in blueprints, so new shapes go last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum MenuShape {
     Wide,
     Pluribus,
     PluribusFinePre,
+    Uniform,
 }
 
 /// K-medians cluster centers, one set per street. Two feature families
@@ -521,6 +529,8 @@ impl Abstraction {
             (MenuShape::PluribusFinePre, Street::Preflop, 1) => &[B::P33, B::P50, B::P75, B::POT, B::P200],
             (MenuShape::PluribusFinePre, Street::Preflop, 2) => &[B::P50, B::POT, B::P200],
             (MenuShape::PluribusFinePre, Street::Preflop, _) => &[B::POT],
+            // Uniform: one menu everywhere, however many raises came before.
+            (MenuShape::Uniform, _, _) => &[B::P33, B::P50, B::POT, B::P150, B::P200],
             // Wide postflop: 25..200% first-in, 4-size raises, 2-size re-raises.
             (MenuShape::Wide, Street::Flop, 0) => &[B::P25, B::P33, B::P50, B::P75, B::POT, B::P150, B::P200],
             (MenuShape::Wide, _, 0) => &[B::P33, B::P50, B::P75, B::POT, B::P150, B::P200],
@@ -1453,6 +1463,67 @@ mod tests {
         let root = Hand::new(&cfg, 0, crate::cards::fresh_deck());
         assert!(bets(&fine, &root) > bets(&plu, &root));
         assert_eq!(bets(&plu, &root), bets(&wide, &root));
+    }
+
+    /// The uniform menu offers the same five sizes at every street and raise
+    /// count, minus those the stacks make illegal or turn into the all-in.
+    #[test]
+    fn uniform_menu_is_the_same_everywhere() {
+        let a = Abstraction::new(AbsConfig {
+            menu: MenuShape::Uniform,
+            cache_cap: 1000,
+            ..AbsConfig::default()
+        });
+        let five = [BetSize::P33, BetSize::P50, BetSize::POT, BetSize::P150, BetSize::P200];
+        let sizes = |h: &Hand| -> Vec<BetSize> {
+            a.abstract_actions(h)
+                .iter()
+                .filter_map(|x| match x {
+                    AbsAction::Bet(s) => Some(*s),
+                    _ => None,
+                })
+                .collect()
+        };
+        for street in [Street::Preflop, Street::Flop, Street::Turn, Street::River] {
+            for n_raises in 0..8 {
+                assert_eq!(a.bet_menu(street, n_raises), &five[..]);
+            }
+        }
+
+        // UTG open at 100bb: 33% of (pot + call) is below the minimum raise
+        // and lifts to it (2bb), so it stays a distinct size from 50%.
+        let cfg = HandConfig::default();
+        let root = Hand::new(&cfg, 0, crate::cards::fresh_deck());
+        assert_eq!(sizes(&root), five);
+        let to = |h: &Hand, s| match a.concrete(h, AbsAction::Bet(s)) {
+            PlayerAction::RaiseTo(t) => t,
+            other => panic!("bet became {other:?}"),
+        };
+        assert_eq!(to(&root, BetSize::P33), 200);
+        assert_eq!(to(&root, BetSize::POT), 350);
+
+        // Facing a raise, and again on later streets, the menu is unchanged.
+        let mut h = root.clone();
+        h.apply(a.concrete(&h, AbsAction::Bet(BetSize::POT)));
+        assert_eq!(sizes(&h), five);
+        let mut flop = root.clone();
+        for _ in 0..cfg.num_players.get() {
+            flop.apply(PlayerAction::CheckCall);
+        }
+        assert_eq!(flop.street(), Street::Flop);
+        assert_eq!(sizes(&flop), five);
+        flop.apply(a.concrete(&flop, AbsAction::Bet(BetSize::P50)));
+        assert_eq!(sizes(&flop), five);
+
+        // A raise war of 2x-pot raises runs into the stacks within a few
+        // raises and ends with all-in as the only raise left.
+        let mut wars = 0;
+        while let Some(&big) = sizes(&h).last() {
+            h.apply(a.concrete(&h, AbsAction::Bet(big)));
+            wars += 1;
+            assert!(wars < 10, "a raise war must reach the stacks");
+        }
+        assert!(a.abstract_actions(&h).contains(&AbsAction::AllIn));
     }
 
     #[test]
