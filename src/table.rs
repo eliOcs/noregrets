@@ -323,7 +323,10 @@ pub fn run_eval(
 /// of a DIFFERENT policy, duplicate-style deals. Measures how well one
 /// self-play equilibrium fares inside another's population — the
 /// multiplayer equilibrium-selection question: if the two runs converged
-/// to interchangeable equilibria, cross-play is ~0 by symmetry.
+/// to interchangeable equilibria, cross-play is ~0 by symmetry. Policies
+/// with different bet menus each play from their own view of the hand
+/// (`crossplay_hand`), so the result includes what each loses mapping the
+/// other's sizes onto its own menu.
 pub fn run_crossplay(
     focal: &Policy,
     field: &Policy,
@@ -340,16 +343,8 @@ pub fn run_crossplay(
             let button = rng.random_range(0..n);
             let mut deck = fresh_deck();
             deck.shuffle(&mut rng);
-            let mut table = Table::new(cfg, button, deck);
-            let mut guard = 0;
-            while let Some(p) = table.real.to_act() {
-                guard += 1;
-                assert!(guard < 500, "crossplay hand did not terminate");
-                let pol = if p == hero { focal } else { field };
-                let a = pol.act_blueprint(&table.shadow, &table.hist, &mut rng);
-                table.apply_abs(a, &pol.abs);
-            }
-            table.real.utilities()[hero] as f64 / cfg.blinds.bb() as f64 * 1000.0
+            let u = crossplay_hand(focal, field, cfg, hero, button, deck, &mut rng, |_, _, _| {});
+            u / cfg.blinds.bb() as f64 * 1000.0
         })
         .collect();
 
@@ -359,6 +354,52 @@ pub fn run_crossplay(
         mbb_per_hand: mean,
         ci95,
     }
+}
+
+/// One cross-play hand, `focal` in seat `hero` and `field` in the others;
+/// returns the hero's winnings in chips.
+///
+/// Each blueprint follows the hand through its own view: a shadow on its
+/// own bet menu and a history of its own tokens, so it always looks up
+/// infosets it was trained on. The actor's abstract action is applied to
+/// its view, and the concrete action that results is mapped onto the
+/// other view's menu (the log-nearest size), as `serve` maps a human's
+/// bet. Blueprints with the same menu share one view, where a shared
+/// history is exact. `on_decision(is_focal, views, actor_view)` sees
+/// every decision before it is made.
+#[allow(clippy::too_many_arguments)]
+fn crossplay_hand(
+    focal: &Policy,
+    field: &Policy,
+    cfg: &HandConfig,
+    hero: usize,
+    button: usize,
+    deck: Deck,
+    rng: &mut SmallRng,
+    mut on_decision: impl FnMut(bool, &[Table], usize),
+) -> f64 {
+    let shared = focal.abs.cfg.menu == field.abs.cfg.menu;
+    let mut views = vec![Table::new(cfg, button, deck)];
+    if !shared {
+        views.push(Table::new(cfg, button, deck));
+    }
+    // Focal reads view 0, the field view 1 (or 0 when shared).
+    let view_of = |is_focal: bool| usize::from(!shared && !is_focal);
+    let mut guard = 0;
+    while let Some(p) = views[0].real.to_act() {
+        guard += 1;
+        assert!(guard < 500, "crossplay hand did not terminate");
+        let is_focal = p == hero;
+        let (pol, other) = if is_focal { (focal, field) } else { (field, focal) };
+        let v = view_of(is_focal);
+        on_decision(is_focal, &views, v);
+        let a = pol.act_blueprint(&views[v].shadow, &views[v].hist, rng);
+        let real_act = views[v].apply_abs(a, &pol.abs);
+        if !shared {
+            views[1 - v].apply_concrete(real_act, &other.abs);
+        }
+    }
+    views[0].real.utilities()[hero] as f64
 }
 
 /// Search-mode evaluation: the hero plays with full range-tracked online
@@ -744,6 +785,71 @@ mod tests {
         let r = run_eval_search(&policy, &cfg, Baseline::Caller, 24, params, 3);
         assert_eq!(r.hands, 24);
         assert!(r.mbb_per_hand.is_finite() && r.ci95.is_finite());
+    }
+
+    /// Cross-play between bet menus: each blueprint only ever looks up a
+    /// history its own menu can produce, both views follow the same real
+    /// hand, and the views do differ (sizes get mapped). Equal menus keep
+    /// one shared view.
+    #[test]
+    fn crossplay_gives_each_menu_its_own_view() {
+        use crate::abstraction::{Centroids, MenuShape};
+        use crate::cfr::{TrainConfig, Trainer};
+        let hand = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
+        let train = |menu| {
+            let abs_cfg = AbsConfig {
+                postflop_buckets: std::num::NonZero::new(6).unwrap(),
+                equity_rollouts: std::num::NonZero::new(40).unwrap(),
+                dist_runouts: std::num::NonZero::new(8).unwrap(),
+                runout_rollouts: std::num::NonZero::new(20).unwrap(),
+                cache_cap: 500_000,
+                menu,
+            };
+            let cents = Centroids::train(&abs_cfg, std::num::NonZero::new(300).unwrap(), 5);
+            let abs = std::sync::Arc::new(Abstraction::with_centroids(abs_cfg, Some(cents)));
+            let tcfg = TrainConfig { hand: hand.clone(), prune_after: u64::MAX, ..TrainConfig::default() };
+            let trainer = Trainer::new(abs.clone(), tcfg);
+            trainer.run(20_000, &|_| {});
+            Policy::new(trainer.to_blueprint(), abs)
+        };
+        let (wide, plu) = (train(MenuShape::Wide), train(MenuShape::Pluribus));
+        // The tokens of `t.hist`, replayed from the hand's start, must each
+        // be an action of `abs`'s menu and land on `t.shadow`.
+        let on_menu = |t: &Table, abs: &Abstraction, start: &Hand| {
+            let mut h = start.clone();
+            for &tok in t.hist.iter().filter(|&&tok| tok != Token::StreetSep) {
+                let Some(a) = abs.abstract_actions(&h).into_iter().find(|a| a.token() == tok) else {
+                    return false;
+                };
+                h.apply(abs.concrete(&h, a));
+            }
+            h.pot() == t.shadow.pot() && h.to_act() == t.shadow.to_act()
+        };
+        let mut differ = 0;
+        let mut decisions = 0;
+        for i in 0..200u64 {
+            let mut rng = SmallRng::seed_from_u64(i);
+            let mut deck = fresh_deck();
+            deck.shuffle(&mut rng);
+            let start = Hand::new(&hand, 0, deck);
+            let hero = (i % 2) as usize;
+            crossplay_hand(&wide, &plu, &hand, hero, 0, deck, &mut rng, |is_focal, views, v| {
+                assert_eq!(views.len(), 2);
+                assert_eq!(v, usize::from(!is_focal));
+                let (r0, r1) = (&views[0].real, &views[1].real);
+                assert_eq!((r0.pot(), r0.to_act(), r0.street()), (r1.pot(), r1.to_act(), r1.street()));
+                let abs = if is_focal { &wide.abs } else { &plu.abs };
+                assert!(on_menu(&views[v], abs, &start), "off-menu history {:?}", views[v].hist);
+                decisions += 1;
+                differ += usize::from(views[0].hist != views[1].hist);
+            });
+        }
+        assert!(decisions > 400);
+        assert!(differ > 0, "no bet was ever mapped between the menus");
+        let mut rng = SmallRng::seed_from_u64(1);
+        crossplay_hand(&plu, &plu, &hand, 0, 0, fresh_deck(), &mut rng, |_, views, v| {
+            assert_eq!((views.len(), v), (1, 0));
+        });
     }
 
     /// After off-tree drift leaves the shadow all-in while the real hand

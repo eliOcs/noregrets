@@ -707,6 +707,8 @@ enum Cmd {
     /// Cross-play two blueprints: --focal in one rotating seat against a
     /// full table of --field. If self-play equilibria were interchangeable,
     /// the result would be ~0 — the multiplayer equilibrium-selection probe.
+    /// Blueprints with different bet menus each see the other's bets mapped
+    /// to their own nearest size, as `serve` maps a human's.
     Crossplay {
         #[arg(long)]
         focal: String,
@@ -1887,15 +1889,12 @@ fn main() {
             if focal_p.blueprint.num_players != field_p.blueprint.num_players {
                 die("blueprints trained for different table sizes");
             }
-            if focal_p.blueprint.abs_cfg.menu != field_p.blueprint.abs_cfg.menu {
-                // One shared action history is tokenised by whichever policy
-                // acts; a bet size the other menu lacks puts that policy
-                // off-tree for the rest of the hand (check/call fallback).
-                // Measured 2026-08-25: -908/-1334 in BOTH directions.
-                die(&format!(
-                    "cross-play needs matching bet menus: focal {:?}, field {:?}",
-                    focal_p.blueprint.abs_cfg.menu, field_p.blueprint.abs_cfg.menu
-                ));
+            let (focal_menu, field_menu) = (focal_p.blueprint.abs_cfg.menu, field_p.blueprint.abs_cfg.menu);
+            if focal_menu != field_menu {
+                println!(
+                    "menus differ ({focal_menu:?} focal, {field_menu:?} field): each plays from its own \
+                     view, the other's bets mapped to its nearest size"
+                );
             }
             let cfg = HandConfig {
                 num_players: focal_p.blueprint.num_players,
