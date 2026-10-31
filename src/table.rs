@@ -814,17 +814,15 @@ mod tests {
             Policy::new(trainer.to_blueprint(), abs)
         };
         let (wide, plu) = (train(MenuShape::Wide), train(MenuShape::Pluribus));
-        // The tokens of `t.hist`, replayed from the hand's start, must each
-        // be an action of `abs`'s menu and land on `t.shadow`.
-        let on_menu = |t: &Table, abs: &Abstraction, start: &Hand| {
-            let mut h = start.clone();
-            for &tok in t.hist.iter().filter(|&&tok| tok != Token::StreetSep) {
-                let Some(a) = abs.abstract_actions(&h).into_iter().find(|a| a.token() == tok) else {
-                    return false;
-                };
-                h.apply(abs.concrete(&h, a));
-            }
-            h.pot() == t.shadow.pot() && h.to_act() == t.shadow.to_act()
+        // Exactly one action lands on both views between two decisions, so
+        // the token each view gained must be on its own menu at the shadow
+        // it was chosen on. (A replay of `hist` from the start would not
+        // do: off-tree drift resyncs the shadow to the real hand.)
+        let new_token_on_menu = |before: &Table, after: &Table, abs: &Abstraction| {
+            let Some(&tok) = after.hist[before.hist.len()..].iter().find(|&&t| t != Token::StreetSep) else {
+                return false;
+            };
+            abs.abstract_actions(&before.shadow).iter().any(|a| a.token() == tok)
         };
         let mut differ = 0;
         let mut decisions = 0;
@@ -832,15 +830,24 @@ mod tests {
             let mut rng = SmallRng::seed_from_u64(i);
             let mut deck = fresh_deck();
             deck.shuffle(&mut rng);
-            let start = Hand::new(&hand, 0, deck);
             let hero = (i % 2) as usize;
+            let mut prev: Option<Vec<Table>> = None;
             crossplay_hand(&wide, &plu, &hand, hero, 0, deck, &mut rng, |is_focal, views, v| {
                 assert_eq!(views.len(), 2);
                 assert_eq!(v, usize::from(!is_focal));
                 let (r0, r1) = (&views[0].real, &views[1].real);
                 assert_eq!((r0.pot(), r0.to_act(), r0.street()), (r1.pot(), r1.to_act(), r1.street()));
-                let abs = if is_focal { &wide.abs } else { &plu.abs };
-                assert!(on_menu(&views[v], abs, &start), "off-menu history {:?}", views[v].hist);
+                if let Some(prev) = &prev {
+                    for (w, abs) in [&wide.abs, &plu.abs].into_iter().enumerate() {
+                        assert!(
+                            new_token_on_menu(&prev[w], &views[w], abs),
+                            "view {w} got an off-menu token: {:?} -> {:?}",
+                            prev[w].hist,
+                            views[w].hist
+                        );
+                    }
+                }
+                prev = Some(views.to_vec());
                 decisions += 1;
                 differ += usize::from(views[0].hist != views[1].hist);
             });
