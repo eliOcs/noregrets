@@ -116,9 +116,10 @@ fn note_menu_mismatch(stored: usize, menu: usize) {
 /// richer than the turn solver's data-generation menu, still small enough
 /// to keep leaf-refresh network queries affordable.
 const FLOP_MENU: [BetSize; 3] = [BetSize::P33, BetSize::P75, BetSize::P150];
-/// Bet-size menu for exact turn resolves at the table (75% pot + all-in,
-/// matching the value net's training menu): full menus put the turn+river
-/// vector tree at tens of GB.
+/// Bet-size menu for exact turn resolves at the table with
+/// `SearchParams::turn_solve` (75% pot + all-in, matching the value net's
+/// training menu): full menus put the turn+river vector tree at tens of GB.
+/// Only menus with a 75% size (Wide) keep a bet here.
 const TURN_MENU: [BetSize; 1] = [BetSize::P75];
 /// Turn cards sampled per leaf refresh (of 49) — bounds net queries per
 /// refresh at real-time budgets.
@@ -160,6 +161,14 @@ pub struct SearchParams {
     /// Multiway MCCFR resolves are rooted at the start of the current
     /// betting round (Pluribus) rather than at the current decision.
     pub round_root: bool,
+    /// Two-player turns are re-solved by the exact turn+river solver with
+    /// the slim `TURN_MENU` (the default), instead of played from the
+    /// blueprint. Under the Pluribus menu no size matches the slim menu, so
+    /// the solve can only check, call, fold or move all-in; the blueprint's
+    /// full menu is too slow to solve with all 48 rivers. Playing these
+    /// turns from the blueprint measured more exploitable (BASELINES,
+    /// 31 Oct 2026), so it stays an A/B arm.
+    pub turn_solve: bool,
 }
 
 impl Default for SearchParams {
@@ -171,6 +180,7 @@ impl Default for SearchParams {
             safe_resolve: false,
             adaptive: false,
             round_root: true,
+            turn_solve: true,
         }
     }
 }
@@ -464,8 +474,12 @@ impl Policy {
         // Turn spots with two live players: exact turn+river vector solve
         // (slim bet menu), optionally inside the safety gadget. The solve's
         // river-entry CFVs are carried in the session for the river
-        // resolve's gadget (continual resolving).
+        // resolve's gadget (continual resolving). Without `turn_solve` they
+        // play the blueprint, with its full bet menu.
         if real.street() == Street::Turn && real.live_count() == 2 {
+            if !params.turn_solve {
+                return self.blueprint_dist(shadow, hist, rng);
+            }
             if let Some(tr) = tracker {
                 if let Some(d) = self.turn_dist(real, hist, tr, params, session, rng) {
                     return d;
@@ -926,6 +940,7 @@ mod tests {
                 safe_resolve: false,
                 adaptive: false,
                 round_root: true,
+                turn_solve: true,
             },
             None,
             None,
@@ -1086,6 +1101,7 @@ mod tests {
                 safe_resolve: true,
                 adaptive: false,
                 round_root: true,
+                turn_solve: true,
             },
             &train_cfg,
             Some(&tracker),
@@ -1145,6 +1161,7 @@ mod tests {
                     safe_resolve: safe,
                     adaptive: false,
                     round_root: true,
+                    turn_solve: true,
                 },
                 &train_cfg,
                 Some(&tracker),
@@ -1195,6 +1212,7 @@ mod tests {
             safe_resolve: true,
             adaptive: false,
             round_root: true,
+            turn_solve: true,
         };
         let mut table = Table::new(&hand_cfg, 0, deck);
         for _ in 0..4 {
@@ -1310,6 +1328,7 @@ mod tests {
             safe_resolve: true,
             adaptive: false,
             round_root: true,
+            turn_solve: true,
         };
         let mut table = Table::new(&hand_cfg, 0, deck);
         table.apply_abs(AbsAction::CheckCall, &abs);
@@ -1332,6 +1351,49 @@ mod tests {
         let (bp_acts, bp_probs) = policy.blueprint_dist(&table.shadow, &table.hist, &mut rng2);
         assert_eq!(acts, bp_acts);
         assert_eq!(probs, bp_probs, "no-net flop must be pure blueprint");
+    }
+
+    /// Two-player turns: the exact solve by default, whose slim menu keeps
+    /// no bet size of the Pluribus menu; without `turn_solve`, the
+    /// blueprint with its full bet menu.
+    #[test]
+    fn two_player_turns_solve_or_play_the_blueprint() {
+        use crate::search::RangeTracker;
+        use crate::table::Table;
+        let front = parse_cards("2c 7d Ah Kd Qs Js Ts 3h 4d").unwrap();
+        let deck = Deck::with_front(&front).unwrap();
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
+        let abs = Arc::new(abs_small());
+        let policy = Policy::new(
+            Blueprint {
+                strategies: Default::default(),
+                iterations: 0,
+                num_players: Players::TWO,
+                abs_cfg: AbsConfig::default(),
+                centroids: None,
+            },
+            abs.clone(),
+        );
+        let train_cfg = TrainConfig { hand: hand_cfg.clone(), prune_after: u64::MAX, ..TrainConfig::default() };
+        let mut table = Table::new(&hand_cfg, 0, deck);
+        for _ in 0..4 {
+            table.apply_abs(AbsAction::CheckCall, &abs);
+        }
+        assert_eq!(table.real.street(), Street::Turn);
+        let mut tracker = RangeTracker::new(2);
+        tracker.exclude(table.real.board());
+        let dist = |turn_solve: bool| {
+            let params = SearchParams { time_ms: 2_000, max_iters: 20, turn_solve, ..SearchParams::default() };
+            let mut rng = SmallRng::seed_from_u64(3);
+            policy.search_dist(&table.real, &table.shadow, &table.hist, params, &train_cfg, Some(&tracker), None, None, &mut rng)
+        };
+        let (acts, probs) = dist(false);
+        let mut rng = SmallRng::seed_from_u64(3);
+        assert_eq!((acts.clone(), probs), policy.blueprint_dist(&table.shadow, &table.hist, &mut rng));
+        assert!(acts.iter().any(|a| matches!(a, AbsAction::Bet(_))), "blueprint menu has bet sizes: {acts:?}");
+        let (solved, _) = dist(true);
+        assert_eq!(solved, [AbsAction::CheckCall, AbsAction::AllIn], "the slim solve keeps no Pluribus size");
+        assert!(SearchParams::default().turn_solve, "the solve stays the default");
     }
 
     /// Nested re-solving of off-tree bets: the bot must price an off-tree
@@ -1402,6 +1464,7 @@ mod tests {
             safe_resolve: false,
             adaptive: false,
             round_root: true,
+            turn_solve: true,
         };
         // EV of calling 800 real: .42(+900) - .58(900) = -144 < fold -100.
         let mut rng = SmallRng::seed_from_u64(9);
@@ -1490,6 +1553,7 @@ mod tests {
                 safe_resolve: false,
                 adaptive: false,
                 round_root: true,
+                turn_solve: true,
             },
             Some(&tracker),
             Some(LeafCfg {

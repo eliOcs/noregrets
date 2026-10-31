@@ -301,6 +301,11 @@ enum Cmd {
         /// needed for a compact blueprint that includes its table.
         #[arg(long)]
         bucket_table: Option<String>,
+        /// Play two-player turns from the blueprint, with its full bet menu,
+        /// instead of the exact turn+river solve and its slim menu (A/B arm;
+        /// measured more exploitable).
+        #[arg(long)]
+        turn_blueprint: bool,
     },
     /// Export a blueprint in the compact, memory-mapped serving format.
     Compact {
@@ -562,6 +567,11 @@ enum Cmd {
         /// start of the betting round (the pre-A3 behaviour; A/B arm).
         #[arg(long)]
         decision_root: bool,
+        /// Play two-player turns from the blueprint, with its full bet menu,
+        /// instead of the exact turn+river solve and its slim menu (A/B arm;
+        /// measured more exploitable).
+        #[arg(long)]
+        turn_blueprint: bool,
         /// Postflop card buckets inside multiway resolves (equity
         /// quantiles; exact per board on the river). Default: the
         /// blueprint's.
@@ -606,6 +616,11 @@ enum Cmd {
         /// start of the betting round (the pre-A3 behaviour; A/B arm).
         #[arg(long)]
         decision_root: bool,
+        /// Play two-player turns from the blueprint, with its full bet menu,
+        /// instead of the exact turn+river solve and its slim menu (A/B arm;
+        /// measured more exploitable).
+        #[arg(long)]
+        turn_blueprint: bool,
         /// Postflop card buckets inside multiway resolves (equity
         /// quantiles; exact per board on the river). Default: the
         /// blueprint's.
@@ -1106,7 +1121,7 @@ fn main() {
             play::play(&policy, &opts);
         }
 
-        Cmd::Serve { blueprint, stack, also, search, search_ms, search_iters, bucket_table } => {
+        Cmd::Serve { blueprint, stack, also, search, search_ms, search_iters, bucket_table, turn_blueprint } => {
             let table = bucket_table.as_ref().map(|path| {
                 abstraction::BucketTable::load(path)
                     .unwrap_or_else(|e| die(&format!("cannot load bucket table '{path}': {e}")))
@@ -1114,6 +1129,7 @@ fn main() {
             let params = SearchParams {
                 time_ms: search_ms,
                 max_iters: search_iters,
+                turn_solve: !turn_blueprint,
                 ..SearchParams::default()
             };
             let load = |path: &str, depth: Stack| -> serve::Served {
@@ -1592,6 +1608,7 @@ fn main() {
             search_ms,
             search_iters,
             decision_root,
+            turn_blueprint,
             search_buckets,
             stack,
         } => {
@@ -1599,6 +1616,7 @@ fn main() {
                 time_ms: search_ms,
                 max_iters: search_iters,
                 round_root: !decision_root,
+                turn_solve: !turn_blueprint,
                 ..SearchParams::default()
             });
             let policy = load_policy_strat(&blueprint, strat_prev.as_deref())
@@ -1613,7 +1631,7 @@ fn main() {
                 if multiway { "multiway, LBR seat rotating" } else { "blind-vs-blind" },
                 cfg.num_players,
                 if search {
-                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()))
+                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" })
                 } else {
                     String::new()
                 }
@@ -1653,6 +1671,7 @@ fn main() {
             search_ms,
             search_iters,
             decision_root,
+            turn_blueprint,
             search_buckets,
             stack,
         } => {
@@ -1660,6 +1679,7 @@ fn main() {
                 time_ms: search_ms,
                 max_iters: search_iters,
                 round_root: !decision_root,
+                turn_solve: !turn_blueprint,
                 ..SearchParams::default()
             });
             let policy = load_policy_strat(&blueprint, strat_prev.as_deref())
@@ -1674,7 +1694,7 @@ fn main() {
                  turn/river subgame best response{}...",
                 cfg.num_players,
                 if search {
-                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()))
+                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" })
                 } else {
                     String::new()
                 }

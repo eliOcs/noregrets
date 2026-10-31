@@ -279,6 +279,7 @@ mod tests {
                 safe_resolve: false,
                 adaptive: false,
                 round_root: true,
+                turn_solve: true,
             },
             seed: 42,
         };
