@@ -1942,3 +1942,103 @@ Not measured: the bounds with widened ranges. `lbr` and `br` still
 track by hard Bayes, so the multiway gate (−268 ±120) was measured with
 beliefs `serve` no longer uses. Widening against a field that does play the
 blueprint should cost a little. Against people it is the right model.
+
+## 2026-10-31 — Two-player turns: the slim solve beats the blueprint on every gate
+
+### The served turn solve has no bet sizes
+
+`serve --search` sends every two-player turn to the exact turn+river
+solver, which keeps only the bet sizes in `TURN_MENU` = [75%] (`bot.rs`).
+That menu was written for the Wide menu. The Pluribus menu, the default
+since A1c, has no 75% size postflop (50%/pot first-in, pot facing a bet),
+so the solve offers check, call, fold and all-in only. Checked on a
+heads-up turn: full menu `[CheckCall, Bet50, BetPot, AllIn]`, solve
+`[CheckCall, AllIn]`; facing a bet `[Fold, CheckCall, BetPot, AllIn]` →
+`[Fold, CheckCall, AllIn]`. Every search gate since A1c measured this
+check/jam turn.
+
+The full menu does not fit the budget. One thread on the 12-core dev box,
+100bb heads-up turns, Pluribus menu:
+
+| Turn solve menu | nodes | regret memory | ms per CFR iteration |
+|---|---:|---:|---:|
+| check/jam (served) | 196 | ~6 MB | ~8 |
+| pot only | 1,740–2,892 | 45–82 MB | 51–85 |
+| full menu (50%, pot) | 4,052–8,660 | 111–257 MB | 119–254 |
+| `--menu uniform`, full | out of memory | | |
+
+The cost is the river: in a single-raised pot (600 into 9,700 behind) the
+full menu has 20 turn nodes and 9 lines reaching the river, 148 river
+nodes over those lines, ×48 river cards = 7,124 nodes. Stacks prune only
+after a raise (river trees of 12 nodes instead of 20).
+
+### A/B: blueprint turns against the slim solve
+
+`--turn-blueprint` plays two-player turns from the blueprint and its full
+menu (no solve, no turn carry; the river resolve estimates its own gadget
+values). Local, `lbr --multiway` / `br`, `--search --search-iters 20000
+--search-ms 75`, 20k hands, seeds 1–8, 12 threads, paired by seed. 100bb
+`it-800m-r.nrc`; 80bb `it-800m-80bb.nrc+r80-sw.nrc --stack 8000`.
+
+| Gate | slim solve | blueprint turns | blueprint − solve | blueprint worse |
+|---|---:|---:|---|---|
+| 100bb multiway LBR | +303 | +378 | +75 ±83 (t=2.15) | 6/8 |
+| 100bb heads-up BR | +263 | +298 | +35 ±74 (t=1.13) | 5/8 |
+| 80bb multiway LBR | +280 | +371 | **+91 ±31 (t=6.94)** | 8/8 |
+| 80bb heads-up BR (7 seeds) | +136 | +210 | **+75 ±51 (t=3.57)** | 6/7 |
+
+Per seed (solve / blueprint), 100bb multiway: 305/294 418/526 104/188
+246/321 649/733 273/168 155/294 274/502; heads-up 178/281 271/264
+186/118 46/244 101/142 628/700 321/259 371/377. 80bb multiway: 392/537
+256/322 47/139 326/467 406/489 454/508 38/143 322/366; heads-up 100/180
+214/332 113/90 227/260 −38/57 224/299 110/254 (seed 8's solve arm was cut
+off by the job's time limit). A ~1-minute test build overlapped two of the
+100bb seed-2/3 runs.
+
+Two-player turn decisions took 0 ms with the blueprint against 82 ms mean
+(p99 89 ms) with the solve.
+
+Caveat: both probes model the bot as the blueprint (`lbr` Bayes-updates
+its range with blueprint probabilities, `br` best-responds to the
+blueprint), while the searching bot is not one. On turns the blueprint arm
+plays exactly the modelled policy and the solve arm does not, so the
+probes may flatter the solve. They cannot separate "plays better" from
+"is modelled worse", as for every search gate in this file.
+
+VERDICT: not adopted. The slim check/jam solve stays the default;
+`--turn-blueprint` (serve, lbr, br) keeps the arm. A fair comparison needs
+a probe that tracks the searching bot's actual strategy.
+
+### Cross-play between bet menus
+
+`crossplay` refused mismatched menus (A1) because one shared history put
+the other menu's sizes in each blueprint's keys. Each blueprint now
+follows the hand through its own shadow and history, and the other's
+concrete bets are mapped to its nearest size (`Table::apply_concrete`, as
+`serve` maps a human's). Equal menus keep one shared view: `crossplay
+--focal it-20m.nrc --field it-20m-seed1.nrc --hands 50000` is identical to
+the previous binary (−318.9 ±594.9, same fallback counts).
+
+Smoke, 2M-iteration 6-max blueprints (`--bucket-table`), 200k hands:
+
+| focal / field | focal winrate | unseen-infoset fallbacks |
+|---|---:|---:|
+| pluribus seed 0 / pluribus seed 1 | −401.5 ±402.4 | 11.6% |
+| pluribus seed 1 / pluribus seed 0 | +371.7 ±399.0 | 11.5% |
+| wide / pluribus | +155.6 ±401.3 | 11.7% |
+| pluribus / wide | −200.9 ±404.2 | 12.7% |
+
+Mapping adds almost no off-tree lookups beyond the same-menu baseline (at
+2M the fallbacks are undertraining), and the two directions mirror each
+other instead of both losing. The numbers include what each side loses to
+mapping, so cross-menu cross-play is a head-to-head check, not a gate.
+
+### `--menu uniform`
+
+33/50/100/150/200% + all-in at every decision and raise count, for an A/B
+against the default menu. 3M-iteration smoke (`--train-seed 0
+--bucket-table`): 81.3M infosets against 22.7M (3.6x), 226k against 452k
+iterations/s, 23 GB peak RSS against 7 GB, 2.6 GB against 0.7 GB saved.
+Stored strategies preflop / flop / turn / river: 38.7M / 14.9M / 7.2M /
+4.5M against 10.7M / 4.4M / 2.3M / 1.3M. Too large for 30M locally; not
+yet gated.

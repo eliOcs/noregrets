@@ -108,7 +108,7 @@ training exactly.
 | `--checkpoint <file>` | – | Write a resumable checkpoint every ~5% |
 | `--resume <file>` | – | Continue from a checkpoint (restores abstraction too) |
 | `--buckets` | 12 | Postflop card buckets per street |
-| `--menu` | pluribus | Bet-size menu shape, stored in the blueprint: `pluribus` (Pluribus's coarse postflop: 50%/100%/all-in first-in, pot/all-in raise; the default, measured least exploitable), `wide` (2026-07 menu, 6-7 postflop sizes), `pluribus-fine-pre` (also a fine 7-size preflop menu; worse at every budget tested) |
+| `--menu` | pluribus | Bet-size menu shape, stored in the blueprint: `pluribus` (Pluribus's coarse postflop: 50%/100%/all-in first-in, pot/all-in raise; the default, measured least exploitable), `wide` (2026-07 menu, 6-7 postflop sizes), `pluribus-fine-pre` (also a fine 7-size preflop menu; worse at every budget tested), `uniform` (33/50/100/150/200% + all-in at every decision and raise count; 3.6x the infosets of `pluribus` at 3M iterations, not yet gated) |
 | `--rollouts` | 200 | MC rollouts per river equity estimate |
 | `--runouts` | 24 | Sampled future boards per flop/turn distribution |
 | `--kmeans-samples` | 30,000 | Situations sampled per street for clustering |
@@ -270,6 +270,7 @@ versions can be compared on identical deals.
 | `--search` | off | The bot resolves postflop decisions online, so the probe faces the bot as it plays |
 | `--search-ms` / `--search-iters` | 2000 / 2M | Per-decision budget; the iteration cap makes the probe load-independent |
 | `--decision-root` | off | Root multiway resolves at the current decision (pre-A3 A/B arm) |
+| `--turn-blueprint` | off | Play two-player turns from the blueprint instead of the exact turn+river solve (A/B arm; measured more exploitable) |
 
 ### `lbr`
 **Local Best Response** (Lisý & Bowling 2017): a lower bound on the
@@ -295,8 +296,8 @@ seed only single-threaded (`RAYON_NUM_THREADS=1`); parallel runs vary by
 roughly 1-3% of the bound between identical invocations (`eval` does not).
 Paired-seed comparisons stay valid; the variation is far inside the CIs.
 
-`--search` (with `--search-ms`, `--search-iters`, `--decision-root`, as on
-`br`) has every bot seat resolve its postflop decisions online, sharing
+`--search` (with `--search-ms`, `--search-iters`, `--decision-root`,
+`--turn-blueprint`, as on `br`) has every bot seat resolve its postflop decisions online, sharing
 one public-history range tracker per hand, so the LBR faces the bot as
 it actually plays rather than the raw blueprint. The LBR's own range
 model of the bot stays the blueprint (it cannot see the resolved
@@ -370,6 +371,12 @@ human's off-blueprint line left the exact river solver answering by
 blockers (88 folding a river pot bet 90% and never calling, ace-high air
 jamming or folding on its kicker; BASELINES, 29 Oct 2026). Search reads strategies through the same store as
 the blueprint answers, so compact blueprints stay memory-mapped.
+
+Two-player turns go to the exact turn+river solver, whose slim menu keeps
+only a 75% size. The Pluribus menu has none, so those turns can only
+check, call, fold or move all-in. `--turn-blueprint` plays them from the
+blueprint and its full menu instead; it measured more exploitable on every
+gate, so it is not the default (BASELINES, 31 Oct 2026).
 
 Search buckets every hand in each range, so it needs the flop/turn bucket
 table: without one, multiway flop searches spend their 75 ms on Monte
@@ -453,6 +460,12 @@ Cross-plays two blueprints: `--focal` occupies one rotating seat against a
 full table of `--field`. The equilibrium-selection probe — if independent
 self-play equilibria were interchangeable, every cross-play direction (and
 the self-play sanity cell) should land near 0 mbb/hand.
+
+Blueprints with different bet menus each follow the hand through their own
+shadow and history, and see the other's bets mapped to their nearest size,
+as `serve` maps a human's. The result then includes what each side loses to
+that mapping, so it is a head-to-head check, not a measure of distance from
+equilibrium; `br` and `lbr` stay the gates.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
