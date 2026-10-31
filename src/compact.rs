@@ -18,6 +18,9 @@
 //! resident, and they are file-backed: the kernel can evict them instead of
 //! needing the whole table to fit in RAM.
 //!
+//! Format 4 may follow each record's weights with one byte of training
+//! mass (`cfr::NodeMass`, how trained the infoset is; `Header::mass`).
+//!
 //! A blueprint may carry its flop/turn bucket table at the end of the file
 //! (`buckets` sorted u64 canonical keys, then as many u16 buckets), read in
 //! place the same way, so serving needs one file and no table in memory.
@@ -31,7 +34,9 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::io::Write;
 
-const MAGIC: &[u8; 8] = b"NRCOMP03";
+const MAGIC: &[u8; 8] = b"NRCOMP04";
+/// The format before per-record training mass; still read.
+const MAGIC_V3: &[u8; 8] = b"NRCOMP03";
 /// The format before embedded bucket tables; still read.
 const MAGIC_V2: &[u8; 8] = b"NRCOMP02";
 const BLOCK: usize = 64;
@@ -50,6 +55,20 @@ pub struct Header {
     pub first_keys: u64,
     /// Entries in the embedded bucket table (0: none).
     pub buckets: u64,
+    /// Each record ends with a training-mass byte.
+    pub mass: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct HeaderV3 {
+    iterations: u64,
+    num_players: Players,
+    abs_cfg: AbsConfig,
+    centroids: Option<Centroids>,
+    records: u64,
+    blocks: u64,
+    first_keys: u64,
+    buckets: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,7 +97,7 @@ pub fn is_compact(path: &str) -> bool {
     let mut magic = [0u8; 8];
     std::fs::File::open(path)
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
-        .is_ok_and(|_| &magic == MAGIC || &magic == MAGIC_V2)
+        .is_ok_and(|_| &magic == MAGIC || &magic == MAGIC_V3 || &magic == MAGIC_V2)
 }
 
 /// Round each action's share to the nearest of `steps` steps and store the
@@ -106,7 +125,20 @@ pub fn quantize(weights: &[f32], steps: u8) -> Option<Vec<u8>> {
 /// [`quantize`]) and, if given, its bucket table, which must have been
 /// built for `bp`'s abstraction. Infosets without a strategy are dropped;
 /// lookups treat them as unseen, as the hash map does.
+#[cfg(test)]
 pub fn write(bp: &Blueprint, path: &str, steps: u8, table: Option<&BucketTable>) -> std::io::Result<u64> {
+    write_with_mass(bp, path, steps, table, None)
+}
+
+/// `write`, with each record's training mass from `mass` when given
+/// (records it lacks get 0).
+pub fn write_with_mass(
+    bp: &Blueprint,
+    path: &str,
+    steps: u8,
+    table: Option<&BucketTable>,
+    mass: Option<&crate::cfr::NodeMass>,
+) -> std::io::Result<u64> {
     if let Some(t) = table {
         if !t.matches(&bp.abs_cfg) || t.centroids != bp.centroids {
             return Err(std::io::Error::other("the bucket table was built for a different abstraction"));
@@ -138,6 +170,9 @@ pub fn write(bp: &Blueprint, path: &str, steps: u8, table: Option<&BucketTable>)
         data.extend_from_slice(suffix);
         data.push(q.len() as u8);
         data.extend_from_slice(q);
+        if let Some(m) = mass {
+            data.push(m.0.get(*key).copied().unwrap_or(0));
+        }
         prev = key;
     }
 
@@ -150,6 +185,7 @@ pub fn write(bp: &Blueprint, path: &str, steps: u8, table: Option<&BucketTable>)
         blocks: index.len() as u64,
         first_keys: first_keys.len() as u64,
         buckets: table.map_or(0, |t| t.entries.len() as u64),
+        mass: mass.is_some(),
     })
     .map_err(std::io::Error::other)?;
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -183,13 +219,26 @@ impl CompactBlueprint {
         // SAFETY: the blueprint file is written once and never modified
         // while served.
         let mmap = unsafe { Mmap::map(&file)? };
-        if mmap.len() < 16 || (&mmap[..8] != MAGIC && &mmap[..8] != MAGIC_V2) {
+        if mmap.len() < 16 || (&mmap[..8] != MAGIC && &mmap[..8] != MAGIC_V3 && &mmap[..8] != MAGIC_V2) {
             return Err(std::io::Error::other("not a compact blueprint"));
         }
         let header_len = u64::from_le_bytes(mmap[8..16].try_into().unwrap()) as usize;
         let bytes = mmap.get(16..16 + header_len).ok_or_else(|| std::io::Error::other("truncated compact blueprint"))?;
         let header: Header = if &mmap[..8] == MAGIC {
             bincode::deserialize(bytes).map_err(std::io::Error::other)?
+        } else if &mmap[..8] == MAGIC_V3 {
+            let h: HeaderV3 = bincode::deserialize(bytes).map_err(std::io::Error::other)?;
+            Header {
+                iterations: h.iterations,
+                num_players: h.num_players,
+                abs_cfg: h.abs_cfg,
+                centroids: h.centroids,
+                records: h.records,
+                blocks: h.blocks,
+                first_keys: h.first_keys,
+                buckets: h.buckets,
+                mass: false,
+            }
         } else {
             let h: HeaderV2 = bincode::deserialize(bytes).map_err(std::io::Error::other)?;
             Header {
@@ -201,6 +250,7 @@ impl CompactBlueprint {
                 blocks: h.blocks,
                 first_keys: h.first_keys,
                 buckets: 0,
+                mass: false,
             }
         };
         let index_at = 16 + header_len;
@@ -245,6 +295,17 @@ impl CompactBlueprint {
     }
 
     pub fn lookup(&self, key: &[u8]) -> Option<&[u8]> {
+        self.record(key).map(|(w, _)| w)
+    }
+
+    /// The training mass byte stored at `key` (format 4 with mass only).
+    pub fn mass(&self, key: &[u8]) -> Option<u8> {
+        self.record(key).and_then(|(_, m)| m)
+    }
+
+    /// The weights at `key`, and its mass byte if the file stores one.
+    fn record(&self, key: &[u8]) -> Option<(&[u8], Option<u8>)> {
+        let extra = usize::from(self.header.mass);
         let blocks = self.header.blocks as usize;
         // Last block whose first key is <= key.
         let (mut lo, mut hi) = (0usize, blocks);
@@ -273,9 +334,12 @@ impl CompactBlueprint {
             let n_at = at + 2 + len;
             let n = self.mmap[n_at] as usize;
             match cur.as_slice().cmp(key) {
-                Ordering::Equal => return Some(&self.mmap[n_at + 1..n_at + 1 + n]),
+                Ordering::Equal => {
+                    let mass = self.header.mass.then(|| self.mmap[n_at + 1 + n]);
+                    return Some((&self.mmap[n_at + 1..n_at + 1 + n], mass));
+                }
                 Ordering::Greater => return None,
-                Ordering::Less => at = n_at + 1 + n,
+                Ordering::Less => at = n_at + 1 + n + extra,
             }
         }
         None
@@ -317,6 +381,12 @@ impl Strategies for CompactBlueprint {
     fn get(&self, bucket: u16, hist: &[Token]) -> Option<std::borrow::Cow<'_, [f32]>> {
         self.lookup(&make_key(bucket, hist))
             .map(|q| std::borrow::Cow::Owned(q.iter().map(|&b| b as f32).collect()))
+    }
+    fn mass(&self, bucket: u16, hist: &[Token]) -> Option<u8> {
+        CompactBlueprint::mass(self, &make_key(bucket, hist))
+    }
+    fn has_mass(&self) -> bool {
+        self.header.mass
     }
     fn len(&self) -> usize {
         self.header.records as usize
@@ -448,6 +518,66 @@ mod tests {
         let c = CompactBlueprint::open(path).unwrap();
         std::fs::remove_file(path).unwrap();
         assert!(c.bucket_table().is_none());
+        for (key, weights) in &bp.strategies {
+            assert_eq!(c.lookup(key), Some(quantize(weights, 255).unwrap().as_slice()));
+        }
+    }
+
+    #[test]
+    fn training_mass_reads_back_beside_the_weights() {
+        let bp = blueprint(4_000, 12);
+        let mut mass = crate::cfr::NodeMass::default();
+        for (i, key) in bp.strategies.keys().enumerate() {
+            // Every third key missing: it must read back as 0.
+            if i % 3 != 0 {
+                mass.0.insert(key.clone(), (i % 255) as u8 + 1);
+            }
+        }
+        let path = std::env::temp_dir().join(format!("nr-compact-mass-{}.bin", std::process::id()));
+        let path = path.to_str().unwrap();
+        write_with_mass(&bp, path, 255, None, Some(&mass)).unwrap();
+        let c = CompactBlueprint::open(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(c.header.mass && Strategies::has_mass(&c));
+        for (key, weights) in &bp.strategies {
+            assert_eq!(c.lookup(key), Some(quantize(weights, 255).unwrap().as_slice()));
+            assert_eq!(c.mass(key), Some(mass.0.get(key).copied().unwrap_or(0)));
+        }
+        let plain = roundtrip(&bp, "no-mass");
+        assert!(!plain.header.mass);
+        assert_eq!(plain.mass(bp.strategies.keys().next().unwrap()), None);
+    }
+
+    #[test]
+    fn version_3_files_still_open() {
+        let bp = blueprint(2_000, 13);
+        let path = std::env::temp_dir().join(format!("nr-compact-v3-{}.bin", std::process::id()));
+        let path = path.to_str().unwrap();
+        write(&bp, path, 255, None).unwrap();
+        // Rewrite the header as version 3 wrote it, without the mass flag.
+        let bytes = std::fs::read(path).unwrap();
+        let len = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+        let h: Header = bincode::deserialize(&bytes[16..16 + len]).unwrap();
+        let v3 = bincode::serialize(&HeaderV3 {
+            iterations: h.iterations,
+            num_players: h.num_players,
+            abs_cfg: h.abs_cfg,
+            centroids: h.centroids,
+            records: h.records,
+            blocks: h.blocks,
+            first_keys: h.first_keys,
+            buckets: h.buckets,
+        })
+        .unwrap();
+        let mut old = MAGIC_V3.to_vec();
+        old.extend_from_slice(&(v3.len() as u64).to_le_bytes());
+        old.extend_from_slice(&v3);
+        old.extend_from_slice(&bytes[16 + len..]);
+        std::fs::write(path, old).unwrap();
+        assert!(is_compact(path));
+        let c = CompactBlueprint::open(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(!c.header.mass);
         for (key, weights) in &bp.strategies {
             assert_eq!(c.lookup(key), Some(quantize(weights, 255).unwrap().as_slice()));
         }

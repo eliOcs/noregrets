@@ -31,6 +31,17 @@ pub trait Strategies: Send + Sync {
     fn get(&self, bucket: u16, hist: &[Token]) -> Option<Cow<'_, [f32]>>;
     fn len(&self) -> usize;
 
+    /// How trained the infoset is (`cfr::NodeMass` byte), where the store
+    /// keeps it.
+    fn mass(&self, _bucket: u16, _hist: &[Token]) -> Option<u8> {
+        None
+    }
+
+    /// Whether `mass` answers for this store.
+    fn has_mass(&self) -> bool {
+        false
+    }
+
     /// The stored weights at an infoset, read against the menu the hand
     /// offers there. Every decision path goes through this, so they all
     /// agree on what counts as a usable strategy.
@@ -117,6 +128,12 @@ impl<T: Strategies + ?Sized> Strategies for Arc<T> {
     fn len(&self) -> usize {
         (**self).len()
     }
+    fn mass(&self, bucket: u16, hist: &[Token]) -> Option<u8> {
+        (**self).mass(bucket, hist)
+    }
+    fn has_mass(&self) -> bool {
+        (**self).has_mass()
+    }
 }
 
 /// Preflop strategies from one source over everything else from another
@@ -139,6 +156,15 @@ impl Strategies for PreflopOverlay {
     }
     fn len(&self) -> usize {
         self.base.len()
+    }
+    fn mass(&self, bucket: u16, hist: &[Token]) -> Option<u8> {
+        if !hist.contains(&Token::StreetSep) && self.preflop.get(bucket, hist).is_some() {
+            return self.preflop.mass(bucket, hist);
+        }
+        self.base.mass(bucket, hist)
+    }
+    fn has_mass(&self) -> bool {
+        self.base.has_mass()
     }
 }
 

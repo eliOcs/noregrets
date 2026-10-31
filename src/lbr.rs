@@ -252,6 +252,58 @@ pub struct LbrResult {
     /// the policy's exploitability.
     pub mbb_per_hand: f64,
     pub ci95: f64,
+    /// With a blueprint that stores training mass: the hands split by the
+    /// thinnest blueprint infoset a bot seat played from (an unseen one
+    /// counts as mass 0), thinnest group first. Empty otherwise.
+    pub by_mass: Vec<MassBand>,
+}
+
+/// Hands whose thinnest bot infoset had a mass byte in `lo..=hi`
+/// (`cfr::mass_of` gives the mass).
+#[derive(Debug)]
+pub struct MassBand {
+    pub lo: u8,
+    pub hi: u8,
+    pub hands: u64,
+    pub mbb_per_hand: f64,
+    pub ci95: f64,
+    /// This band's share of the LBR's total winnings (sum over its hands
+    /// over the sum over all hands).
+    pub share: f64,
+}
+
+/// Split per-hand results into `bands` groups of about equal size by
+/// their thinnest mass (hands without one are left out), keeping hands
+/// with the same mass in one group.
+fn mass_bands(results: &[(f64, Option<u8>)], bands: usize) -> Vec<MassBand> {
+    let mut v: Vec<(u8, f64)> = results.iter().filter_map(|&(x, m)| m.map(|m| (m, x))).collect();
+    if v.is_empty() {
+        return Vec::new();
+    }
+    v.sort_by_key(|&(m, _)| m);
+    let total: f64 = results.iter().map(|r| r.0).sum();
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < v.len() {
+        let mut end = (start + v.len().div_ceil(bands)).min(v.len());
+        while end < v.len() && v[end].0 == v[end - 1].0 {
+            end += 1;
+        }
+        let xs: Vec<f64> = v[start..end].iter().map(|r| r.1).collect();
+        let n = xs.len() as f64;
+        let mean = xs.iter().sum::<f64>() / n;
+        let var = xs.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (n - 1.0).max(1.0);
+        out.push(MassBand {
+            lo: v[start].0,
+            hi: v[end - 1].0,
+            hands: xs.len() as u64,
+            mbb_per_hand: mean,
+            ci95: 1.96 * (var / n).sqrt(),
+            share: if total != 0.0 { xs.iter().sum::<f64>() / total } else { 0.0 },
+        });
+        start = end;
+    }
+    out
 }
 
 /// Run the LBR probe: LBR and the bot in the two blind seats (alternating by
@@ -311,6 +363,7 @@ pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: NonZeroU3
         hands,
         mbb_per_hand: mean,
         ci95: 1.96 * (var / results.len() as f64).sqrt(),
+        by_mass: Vec::new(),
     }
 }
 
@@ -627,11 +680,16 @@ pub fn run_lbr_multiway(
     // board, ranges from public actions), so each is solved once and
     // shared across hands.
     let preflop: dashmap::DashMap<Vec<Token>, Arc<DecisionDist>, ahash::RandomState> = Default::default();
-    let results: Vec<f64> = (0..hands)
+    let track_mass = policy.strategies.has_mass();
+    let results: Vec<(f64, Option<u8>)> = (0..hands)
         .into_par_iter()
         .map(|i| {
             let mut rng =
                 SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x6B12);
+            // Bucketing for the mass breakdown has its own stream, so
+            // tracking it leaves the hands unchanged.
+            let mut mass_rng = SmallRng::seed_from_u64(seed ^ i ^ 0x4D41_5353);
+            let mut thinnest: Option<u8> = None;
             let button = rng.random_range(0..n);
             let lbr_seat = (i % n as u64) as usize;
             let mut deck = fresh_deck();
@@ -670,6 +728,11 @@ pub fn run_lbr_multiway(
             while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 400, "multiway LBR hand did not terminate");
+                if track_mass && p != lbr_seat {
+                    let b = policy.abs.bucket(table.real.hole(p), table.real.board(), &mut mass_rng);
+                    let m = policy.strategies.mass(b, &table.hist).unwrap_or(0);
+                    thinnest = Some(thinnest.map_or(m, |t| t.min(m)));
+                }
                 let street_before = table.real.street();
                 let a = if p == lbr_seat {
                     match (model_search, search, tracker.as_ref()) {
@@ -747,17 +810,18 @@ pub fn run_lbr_multiway(
                     }
                 }
             }
-            table.real.utilities()[lbr_seat] as f64 / bb * 1000.0
+            (table.real.utilities()[lbr_seat] as f64 / bb * 1000.0, thinnest)
         })
         .collect();
 
-    let mean = results.iter().sum::<f64>() / results.len() as f64;
-    let var = results.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>()
+    let mean = results.iter().map(|r| r.0).sum::<f64>() / results.len() as f64;
+    let var = results.iter().map(|r| (r.0 - mean) * (r.0 - mean)).sum::<f64>()
         / (results.len().saturating_sub(1)) as f64;
     LbrResult {
         hands,
         mbb_per_hand: mean,
         ci95: 1.96 * (var / results.len() as f64).sqrt(),
+        by_mass: mass_bands(&results, 5),
     }
 }
 
@@ -927,6 +991,29 @@ mod tests {
             r.mbb_per_hand,
             r.ci95
         );
+    }
+
+    #[test]
+    fn mass_bands_split_by_thinnest_mass_and_share_the_winnings() {
+        // 10 hands at mass 1 winning 1, 10 at 2 winning 3, 10 at 3 losing
+        // 1, two without a bot decision.
+        let mut r: Vec<(f64, Option<u8>)> = Vec::new();
+        r.extend(std::iter::repeat_n((1.0, Some(1)), 10));
+        r.extend(std::iter::repeat_n((3.0, Some(2)), 10));
+        r.extend(std::iter::repeat_n((-1.0, Some(3)), 10));
+        r.extend(std::iter::repeat_n((0.0, None), 2));
+        let b = mass_bands(&r, 3);
+        assert_eq!(b.len(), 3);
+        assert_eq!((b[0].lo, b[0].hi, b[0].hands), (1, 1, 10));
+        assert_eq!((b[2].lo, b[2].hi, b[2].hands), (3, 3, 10));
+        assert!((b[1].mbb_per_hand - 3.0).abs() < 1e-12 && b[1].ci95.abs() < 1e-12);
+        let total = 10.0 + 30.0 - 10.0;
+        assert!((b[1].share - 30.0 / total).abs() < 1e-12);
+        assert!((b.iter().map(|x| x.share).sum::<f64>() - 1.0).abs() < 1e-12);
+        // Equal masses never straddle two bands.
+        let b = mass_bands(&r, 4);
+        assert!(b.windows(2).all(|w| w[0].hi < w[1].lo));
+        assert!(mass_bands(&[(1.0, None)], 5).is_empty());
     }
 
     /// Modelling the search runs end to end: every bot decision is solved

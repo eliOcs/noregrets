@@ -1003,6 +1003,19 @@ impl Trainer {
         }
     }
 
+    /// How much average-strategy mass each infoset of `to_blueprint`
+    /// accumulated in training (see [`NodeMass`]).
+    pub fn node_mass(&self) -> NodeMass {
+        let mut m = HashMap::with_capacity_and_hasher(self.nodes.len(), Default::default());
+        for e in self.nodes.iter() {
+            let total: f64 = e.value().strat.iter().sum();
+            if total > 0.0 {
+                m.insert(e.key().to_vec(), mass_byte(total));
+            }
+        }
+        NodeMass(m)
+    }
+
     /// Full checkpoint (regrets + strategy sums) for resuming training.
     pub fn save_checkpoint(&self, path: &str) -> std::io::Result<()> {
         let snapshot: Vec<(Vec<u8>, Node)> = self
@@ -1121,6 +1134,44 @@ pub fn sample_index(probs: &[f64], rng: &mut SmallRng) -> usize {
 /// entries) is hasher-independent, so existing .bin files stay compatible.
 pub type StrategyMap = HashMap<Vec<u8>, Vec<f32>, ahash::RandomState>;
 
+/// How trained each blueprint infoset is: the total of its accumulated
+/// average strategy (`Node::strat`), which grows with how often and with
+/// how much reach training visited it (weighted by the linear-CFR and
+/// discount schedule, and replaced where a preflop sweep or snapshot
+/// averaging rewrote the average). A relative signal, not a count; it
+/// does not measure convergence. Kept beside the blueprint rather than in
+/// it, so blueprint files keep their format: `train` writes it to
+/// `<out>.mass`, and `compact` embeds it.
+#[derive(Default, Serialize, Deserialize)]
+pub struct NodeMass(pub HashMap<Vec<u8>, u8, ahash::RandomState>);
+
+impl NodeMass {
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        let f = std::io::BufWriter::new(std::fs::File::create(path)?);
+        bincode::serialize_into(f, self).map_err(std::io::Error::other)
+    }
+
+    pub fn load(path: &str) -> std::io::Result<NodeMass> {
+        let f = std::io::BufReader::new(std::fs::File::open(path)?);
+        bincode::deserialize_from(f).map_err(std::io::Error::other)
+    }
+}
+
+/// A strategy-sum total as one byte: quarter steps of log2(1 + total), at
+/// least 1 for any positive total, so 0 means no mass.
+pub fn mass_byte(total: f64) -> u8 {
+    if total > 0.0 {
+        (4.0 * total.ln_1p() / std::f64::consts::LN_2).round().clamp(1.0, 255.0) as u8
+    } else {
+        0
+    }
+}
+
+/// The total a [`mass_byte`] stands for (to a quarter octave).
+pub fn mass_of(byte: u8) -> f64 {
+    (byte as f64 / 4.0).exp2() - 1.0
+}
+
 /// The trained average strategy used at the table, together with the card
 /// abstraction it was trained under (config + k-means centroids), so play
 /// and benchmarking bucket cards exactly as training did.
@@ -1182,6 +1233,41 @@ mod tests {
     use crate::abstraction::{preflop_bucket, AbsAction, AbsConfig};
     use crate::engine::Stack;
     use crate::cards::make_card;
+
+    #[test]
+    fn mass_bytes_are_monotone_quarter_octaves() {
+        assert_eq!(mass_byte(0.0), 0);
+        assert_eq!(mass_byte(-1.0), 0);
+        assert_eq!(mass_byte(1e-12), 1, "any positive mass is told apart from none");
+        let mut prev = 0;
+        for k in 0..60 {
+            let m = (k as f64).exp2();
+            let b = mass_byte(m);
+            assert!(b >= prev);
+            prev = b;
+            if m >= 1.0 {
+                let back = mass_of(b);
+                assert!((back.ln_1p() - m.ln_1p()).abs() <= 0.125 * std::f64::consts::LN_2 + 1e-9, "{m} -> {b} -> {back}");
+            }
+        }
+        assert_eq!(mass_byte(f64::MAX), 255);
+    }
+
+    #[test]
+    fn node_mass_covers_the_blueprint_and_the_root_is_heaviest() {
+        let t = push_fold_trainer();
+        t.run(3_000, &|_| {});
+        let bp = t.to_blueprint();
+        let mass = t.node_mass();
+        assert_eq!(mass.0.len(), bp.strategies.len());
+        assert!(bp.strategies.keys().all(|k| mass.0.get(k).is_some_and(|&b| b > 0)));
+        // A preflop opening infoset (empty history) is reached every
+        // iteration the hand is dealt into its bucket; some deeper infoset
+        // must carry less.
+        let root = mass.0.iter().filter(|(k, _)| k.len() == make_key(0, &[]).len()).map(|(_, &b)| b).max().unwrap();
+        let thinnest = *mass.0.values().min().unwrap();
+        assert!(thinnest < root, "root {root}, thinnest {thinnest}");
+    }
 
     fn push_fold_trainer() -> Trainer {
         // 10bb heads-up: near push/fold; converges fast and has known properties.

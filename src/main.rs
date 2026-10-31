@@ -636,6 +636,10 @@ enum Cmd {
         /// blueprint (ablation arms, e.g. `--blueprint-at river,mccfr`).
         #[arg(long, value_delimiter = ',', requires = "search")]
         blueprint_at: Vec<SearchPart>,
+        /// Two-player turn and river resolves run inside the safety
+        /// gadget (the opponent may take its blueprint value instead).
+        #[arg(long, requires = "search")]
+        safe_resolve: bool,
         /// With --search: the LBR models the bot as it searches, not as
         /// the blueprint. Every bot decision is solved for all combos, the
         /// bot acts from its own, and the LBR's range updates and fold
@@ -1035,6 +1039,10 @@ fn main() {
                         .to_blueprint()
                         .save(&path)
                         .unwrap_or_else(|e| die(&format!("blueprint save failed: {e}")));
+                    trainer
+                        .node_mass()
+                        .save(&format!("{path}.mass"))
+                        .unwrap_or_else(|e| die(&format!("node mass save failed: {e}")));
                     println!("saved {path} at {:.0}s", started.elapsed().as_secs_f64());
                 }
                 if let Some(path) = &checkpoint {
@@ -1058,8 +1066,12 @@ fn main() {
             let bp = trainer.to_blueprint();
             bp.save(&out)
                 .unwrap_or_else(|e| die(&format!("blueprint save failed: {e}")));
+            trainer
+                .node_mass()
+                .save(&format!("{out}.mass"))
+                .unwrap_or_else(|e| die(&format!("node mass save failed: {e}")));
             println!(
-                "blueprint saved to {out} ({} strategies)",
+                "blueprint saved to {out} ({} strategies; training mass per infoset in {out}.mass)",
                 bp.strategies.len()
             );
         }
@@ -1197,7 +1209,16 @@ fn main() {
                 abstraction::BucketTable::load(path)
                     .unwrap_or_else(|e| die(&format!("cannot load bucket table '{path}': {e}")))
             });
-            let records = compact::write(&bp, &out, steps, table.as_ref())
+            // `train` leaves each infoset's training mass beside the
+            // blueprint; embed it when it is there.
+            let mass_path = format!("{blueprint}.mass");
+            let mass = std::path::Path::new(&mass_path).exists().then(|| {
+                cfr::NodeMass::load(&mass_path).unwrap_or_else(|e| die(&format!("cannot load '{mass_path}': {e}")))
+            });
+            if mass.is_some() {
+                println!("embedding training mass from {mass_path}");
+            }
+            let records = compact::write_with_mass(&bp, &out, steps, table.as_ref(), mass.as_ref())
                 .unwrap_or_else(|e| die(&format!("cannot write '{out}': {e}")));
             let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             println!(
@@ -1636,6 +1657,7 @@ fn main() {
             decision_root,
             turn_blueprint,
             blueprint_at,
+            safe_resolve,
             model_search,
             search_buckets,
             stack,
@@ -1648,6 +1670,7 @@ fn main() {
                 preflop_allin: !blueprint_at.contains(&SearchPart::PreflopAllin),
                 river_solve: !blueprint_at.contains(&SearchPart::River),
                 mccfr_resolve: !blueprint_at.contains(&SearchPart::Mccfr),
+                safe_resolve,
                 ..SearchParams::default()
             });
             let policy = load_policy_strat(&blueprint, strat_prev.as_deref())
@@ -1662,7 +1685,7 @@ fn main() {
                 if multiway { "multiway, LBR seat rotating" } else { "blind-vs-blind" },
                 cfg.num_players,
                 if search {
-                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" }) + &if blueprint_at.is_empty() { String::new() } else { format!(", blueprint at {blueprint_at:?}") } + if model_search { ", LBR models the search" } else { "" }
+                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" }) + &if blueprint_at.is_empty() { String::new() } else { format!(", blueprint at {blueprint_at:?}") } + if safe_resolve { ", safe resolving" } else { "" } + if model_search { ", LBR models the search" } else { "" }
                 } else {
                     String::new()
                 }
@@ -1684,6 +1707,20 @@ fn main() {
                 started.elapsed().as_secs_f64()
             );
             println!("(lower bound on the blueprint's exploitability; 0 = unexploited)");
+            if !r.by_mass.is_empty() {
+                println!("by the thinnest blueprint infoset the bots played from in the hand (training mass):");
+                for b in &r.by_mass {
+                    println!(
+                        "  mass {:>9.3e} – {:<9.3e} {:>6} hands  {:+8.1} ±{:<7.1} mbb/hand  {:5.1}% of the winnings",
+                        cfr::mass_of(b.lo),
+                        cfr::mass_of(b.hi),
+                        b.hands,
+                        b.mbb_per_hand,
+                        b.ci95,
+                        100.0 * b.share
+                    );
+                }
+            }
             if let Some(r) = bot::fallback_report() {
                 println!("{r}");
             }
