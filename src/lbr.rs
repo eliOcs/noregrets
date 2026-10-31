@@ -18,7 +18,6 @@
 
 use crate::abstraction::{AbsAction, Token};
 use crate::bot::{DecisionDist, Policy, SearchParams, SearchSession};
-use crate::cfr::sample_index;
 use crate::cards::{fresh_deck, Card, Hole};
 use crate::engine::{Hand, HandConfig, PlayerAction, Street};
 use crate::eval::{eval_hole_board, HandValue};
@@ -560,6 +559,11 @@ impl Lbr<'_> {
     }
 }
 
+/// Floor on the likelihoods the LBR's own solve of a bot decision gives:
+/// the bot plays its own solve, so an action the LBR's sample of it never
+/// takes must not erase the combos that took it.
+const MODEL_FLOOR: f64 = 0.01;
+
 /// What `--model-search` needs to solve a bot decision for every combo.
 struct ModelCtx<'a> {
     policy: &'a Policy,
@@ -645,15 +649,18 @@ pub fn run_lbr_multiway(
             // online (shared public-history range tracker, one search
             // session per seat) so the LBR faces the bot as it actually
             // plays. The LBR's own model of the bot stays the blueprint,
-            // unless `model_search`: then every bot decision is solved for
-            // all combos (`search_dist_all`), the bot acts from its own
-            // combo's row, and the LBR updates ranges and predicts folds
-            // from those rows. Solves made for predictions are cached by
-            // history, so a bot that reaches a predicted spot plays the
-            // predicted strategy.
+            // unless `model_search`: then the LBR runs the bot's search
+            // itself, for all combos (`search_dist_all`), and predicts
+            // folds and updates ranges from those rows. Its solves use its
+            // own randomness and sessions, never the bot's: an opponent
+            // that saw which way the bot's sampled solve happened to fall
+            // would overstate the exploitability. Its solves are cached by
+            // history, so a predicted spot the bot reaches is not solved
+            // again.
             let mut tracker = search.map(|_| crate::search::RangeTracker::new(n));
             let mut sessions: Vec<crate::bot::SearchSession> =
                 (0..n).map(|_| crate::bot::SearchSession::new()).collect();
+            let mut model_sessions = sessions.clone();
             let mut solved: std::collections::HashMap<Vec<Token>, (Arc<DecisionDist>, SearchSession)> =
                 std::collections::HashMap::new();
             let mut model_rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0x50DE);
@@ -674,7 +681,7 @@ pub fn run_lbr_multiway(
                                 }
                                 let (dist, _) = solved.entry(st.hist.clone()).or_insert_with(|| {
                                     let model = ModelCtx { policy, params, train_cfg: &train_cfg, preflop: &preflop };
-                                    model.solve(&st, &tr, sessions[j].clone(), &mut model_rng)
+                                    model.solve(&st, &tr, model_sessions[j].clone(), &mut model_rng)
                                 });
                                 let f = dist.acts.iter().position(|&x| x == AbsAction::Fold)?;
                                 Some(dist.probs.iter().map(|row| row[f]).collect())
@@ -683,19 +690,6 @@ pub fn run_lbr_multiway(
                         }
                         _ => lbr.action_multiway(&table, &ranges, &mut rng),
                     }
-                } else if let (true, Some(params), Some(tr)) = (model_search, search, tracker.as_ref()) {
-                    let (dist, sess) = solved.remove(&table.hist).unwrap_or_else(|| {
-                        let model = ModelCtx { policy, params, train_cfg: &train_cfg, preflop: &preflop };
-                        model.solve(&table, tr, sessions[p].clone(), &mut model_rng)
-                    });
-                    sessions[p] = sess;
-                    let idx = sample_index(&dist.probs[table.real.hole(p).index()], &mut rng);
-                    if let Some(r) = ranges[p].as_mut() {
-                        for (w, row) in r.weights.iter_mut().zip(&dist.probs) {
-                            *w *= row[idx];
-                        }
-                    }
-                    dist.acts[idx]
                 } else {
                     let acts = policy.abs.abstract_actions(&table.shadow);
                     let a = match (search, tracker.as_ref()) {
@@ -712,10 +706,29 @@ pub fn run_lbr_multiway(
                         ),
                         _ => policy.act_blueprint(&table.shadow, &table.hist, &mut rng),
                     };
-                    if let (Some(idx), Some(r)) =
-                        (acts.iter().position(|&x| x == a), ranges[p].as_mut())
-                    {
-                        lbr.observe(r, &table.shadow, &table.hist, &acts, idx);
+                    let modelled = match (model_search, search, tracker.as_ref()) {
+                        (true, Some(params), Some(tr)) => {
+                            let (dist, sess) = solved.remove(&table.hist).unwrap_or_else(|| {
+                                let model = ModelCtx { policy, params, train_cfg: &train_cfg, preflop: &preflop };
+                                model.solve(&table, tr, model_sessions[p].clone(), &mut model_rng)
+                            });
+                            model_sessions[p] = sess;
+                            dist.acts.iter().position(|&x| x == a).map(|idx| (dist, idx))
+                        }
+                        _ => None,
+                    };
+                    match (modelled, ranges[p].as_mut()) {
+                        (Some((dist, idx)), Some(r)) => {
+                            for (w, row) in r.weights.iter_mut().zip(&dist.probs) {
+                                *w *= row[idx].max(MODEL_FLOOR);
+                            }
+                        }
+                        (None, Some(r)) => {
+                            if let Some(idx) = acts.iter().position(|&x| x == a) {
+                                lbr.observe(r, &table.shadow, &table.hist, &acts, idx);
+                            }
+                        }
+                        _ => {}
                     }
                     a
                 };
