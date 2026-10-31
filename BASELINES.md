@@ -2073,3 +2073,101 @@ the river solver, `br` and the flop solver.
 The full-menu turn needs ~4 ms per iteration to run ~20 iterations in
 75 ms, about 50x from here; these CPU changes are worth more iterations
 on the slim tree, not the full menu.
+
+## 2026-10-31 — A probe that models the search: served search is MORE exploitable than the blueprint
+
+Every search gate so far (`lbr --multiway --search`, `br --search`) let
+the bot search while the probe kept modelling it as the blueprint: its
+range updates and fold predictions read the blueprint, not what the bot
+actually played, so it under-exploited the search arm. `lbr --multiway
+--search --model-search` makes the LBR run the bot's search itself for
+all 1,326 combos (`Policy::search_dist_all`), with its own randomness and
+sessions, never the bot's (an opponent that saw which way the bot's
+sampled solve fell would overstate it), and predict folds and update
+ranges from those rows. Preflop answers depend only on the history and
+are solved once per run, shared across hands.
+
+Checks of the probe itself, 20k hands, `it-800m-r.nrc`:
+
+- With every search part switched to the blueprint (`--turn-blueprint
+  --blueprint-at preflop-allin,river,mccfr`) the model path must match
+  the plain probe. At a likelihood floor of 0.01 it did not: lower on 8/8
+  seeds, mean +432 vs +659 (−227), because the floor kept every combo
+  the blueprint never plays that way at 1% weight. At floor 0 seed 1 is
+  +611.1 ±245.6, identical to the plain probe; `--search` without
+  `--model-search` also gives +611.1. The floor is now 1e-6 (seed 1:
+  +692.5 ±240.5).
+- An earlier version let the bot play the very solve the LBR predicted
+  from: seed 1 +1172.6 vs +1109.3 once separated (both at floor 0.01).
+
+Search 75ms/20k iters, seeds 1–3 (floor 0.01 rows understate the LBR,
+see above; compare rows within one floor):
+
+| Arm | floor | s1 | s2 | s3 | mean |
+|---|---|---:|---:|---:|---:|
+| blueprint, plain probe | – | +611 | +714 | +464 | **596** |
+| served search, search modelled | 0.01 | +1109 | +1163 | +1122 | **1131** |
+| all parts on the blueprint | 0.01 | +311 | +651 | +375 | 446 |
+| only the preflop all-in resolve | 0.01 | +616 | +823 | +464 | 634 |
+| all but the preflop all-in resolve | 0.01 | +725 | +1127 | +644 | 832 |
+| all but the multiway MCCFR resolve | 0.01 | +815 | +1100 | +960 | 959 |
+| all but the preflop all-in resolve | 1e-6 | +1123 | +1304 | +968 | **1132** |
+| … with `--safe-resolve` | 1e-6 | +817 | +769 | +584 | **723** |
+
+Blueprint-only seeds 4–8: +578 +982 +559 +532 +833 (mean of 8: +659).
+
+1. Against a probe that knows how it plays, the served search is about
+   +535 mbb/hand more exploitable than the blueprint (3/3 seeds, with a
+   handicapped LBR), where the blueprint-modelling probe had it 270–340
+   less exploitable. The earlier search gains were the probe's blind
+   spot, as July's Slumbot runs suggested (search −1649, gadget −1207,
+   blueprint −782): the range tracker assumes opponents play the
+   blueprint and the resolves best-respond to those ranges.
+2. Every part contributes. The preflop all-in resolve (calls 5% facing
+   open + jam, a best response to the blueprint's tight jam range) adds
+   +190 to +300; postflop search without it adds +536 at floor 1e-6.
+3. The safety gadget on two-player turns and rivers takes back 409 of
+   those 536 (3/3 seeds) but is still +127 above the blueprint.
+
+Next: re-gate the served configuration with the modelling probe (8
+seeds) before trusting any search gain; make the preflop all-in resolve
+robust to wide jammers (a jam/call equilibrium over the jammer's
+pre-jam range rather than a best response to its blueprint jam range);
+and break the postflop share down by solver.
+
+## 2026-10-31 — Training mass per infoset
+
+`train` now writes `<out>.mass`: one byte per infoset, quarter steps of
+log2(1 + the infoset's accumulated average-strategy total), a relative
+measure of how much (reach-weighted, linearly weighted) training it got.
+`compact` embeds it (format 4: one byte after each record's weights;
+formats 2 and 3 still read), and `lbr --multiway` on such a blueprint
+splits its hands into five groups by the thinnest infoset a bot played
+from, with each group's share of the LBR's winnings. The 800M
+blueprints predate it.
+
+On a 2M-iteration smoke blueprint (5k hands): hands where a bot reached
+an unseen infoset won the LBR +13,436 mbb/hand, 52% of its winnings;
+the best-trained fifth +1,043, 1.4%.
+
+A local 30M blueprint (`train --iters 30000000 --train-seed 0 --menu
+pluribus --bucket-table buckets.bin`, 54s, 55.6M infosets; `.mass` 1.27
+GB beside the 2.2 GB `.bin`; compact with mass 635 MB, 11.4
+bytes/infoset), `lbr --multiway --hands 20000`, unseen infosets in their
+own group:
+
+| Thinnest infoset in the hand | s1 hands | s1 mbb/hand | s1 share | s2 hands | s2 mbb/hand | s2 share |
+|---|---:|---:|---:|---:|---:|---:|
+| unseen (bot checks/calls) | 875 | +10214 ±4976 | 17.0% | 881 | +5608 ±4536 | 9.5% |
+| mass up to 3.2e8 | 4114 | +4279 ±1469 | 33.6% | 4129 | +5540 ±1469 | 43.9% |
+| 3.8e8 – 1.8e9 | 4106 | +3075 ±1186 | 24.1% | 4043 | +2289 ±1198 | 17.7% |
+| 2.1e9 – 8.6e9 | 3943 | +2273 ±1074 | 17.1% | 3920 | +2308 ±1095 | 17.3% |
+| 1.0e10 – 5.8e10 | 3985 | +796 ±705 | 6.0% | 3979 | +1050 ±670 | 8.0% |
+| 6.9e10 – 6.5e11 | 2977 | +378 ±385 | 2.1% | 3048 | +614 ±403 | 3.6% |
+| all | 20000 | +2621 ±516 | | 20000 | +2608 ±509 | |
+
+At 30M the LBR's winnings fall steadily with training mass: the fifth of
+hands whose thinnest node is thinnest carries 34–44% of them, unseen
+infosets (4.4% of hands) another 10–17%, and the best-trained fifth
+2–4%, still +378 to +614 mbb/hand. Tracking the mass leaves the hands
+unchanged (same totals as without it).

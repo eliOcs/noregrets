@@ -272,9 +272,11 @@ pub struct MassBand {
     pub share: f64,
 }
 
-/// Split per-hand results into `bands` groups of about equal size by
-/// their thinnest mass (hands without one are left out), keeping hands
-/// with the same mass in one group.
+/// Split per-hand results into groups by their thinnest mass (hands
+/// without one are left out): the hands that reached an unseen infoset
+/// (mass 0, where the bot checks/calls) on their own, the rest in `bands`
+/// groups of about equal size, keeping hands with the same mass in one
+/// group.
 fn mass_bands(results: &[(f64, Option<u8>)], bands: usize) -> Vec<MassBand> {
     let mut v: Vec<(u8, f64)> = results.iter().filter_map(|&(x, m)| m.map(|m| (m, x))).collect();
     if v.is_empty() {
@@ -283,9 +285,11 @@ fn mass_bands(results: &[(f64, Option<u8>)], bands: usize) -> Vec<MassBand> {
     v.sort_by_key(|&(m, _)| m);
     let total: f64 = results.iter().map(|r| r.0).sum();
     let mut out = Vec::new();
+    let unseen = v.iter().take_while(|r| r.0 == 0).count();
+    let size = (v.len() - unseen).div_ceil(bands).max(1);
     let mut start = 0;
     while start < v.len() {
-        let mut end = (start + v.len().div_ceil(bands)).min(v.len());
+        let mut end = if start < unseen { unseen } else { (start + size).min(v.len()) };
         while end < v.len() && v[end].0 == v[end - 1].0 {
             end += 1;
         }
@@ -1003,6 +1007,12 @@ mod tests {
         r.extend(std::iter::repeat_n((-1.0, Some(3)), 10));
         r.extend(std::iter::repeat_n((0.0, None), 2));
         let b = mass_bands(&r, 3);
+        // Unseen infosets get their own group, the rest still split.
+        let mut u = r.clone();
+        u.extend(std::iter::repeat_n((5.0, Some(0)), 4));
+        let ub = mass_bands(&u, 3);
+        assert_eq!((ub[0].lo, ub[0].hi, ub[0].hands), (0, 0, 4));
+        assert_eq!(ub.len(), 4);
         assert_eq!(b.len(), 3);
         assert_eq!((b[0].lo, b[0].hi, b[0].hands), (1, 1, 10));
         assert_eq!((b[2].lo, b[2].hi, b[2].hands), (3, 3, 10));

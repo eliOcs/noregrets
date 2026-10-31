@@ -1710,10 +1710,13 @@ fn main() {
             if !r.by_mass.is_empty() {
                 println!("by the thinnest blueprint infoset the bots played from in the hand (training mass):");
                 for b in &r.by_mass {
+                    let range = if b.hi == 0 {
+                        "an unseen infoset    ".to_string()
+                    } else {
+                        format!("mass {:>9.3e} – {:<9.3e}", cfr::mass_of(b.lo), cfr::mass_of(b.hi))
+                    };
                     println!(
-                        "  mass {:>9.3e} – {:<9.3e} {:>6} hands  {:+8.1} ±{:<7.1} mbb/hand  {:5.1}% of the winnings",
-                        cfr::mass_of(b.lo),
-                        cfr::mass_of(b.hi),
+                        "  {range} {:>6} hands  {:+8.1} ±{:<7.1} mbb/hand  {:5.1}% of the winnings",
                         b.hands,
                         b.mbb_per_hand,
                         b.ci95,
