@@ -43,6 +43,7 @@ pub fn all_combos() -> Vec<Hole> {
 /// which floors per-combo action probabilities).
 const WIDEN_TARGET: f64 = 0.02;
 
+#[derive(Clone)]
 pub struct RangeTracker {
     n: usize,
     combos: Vec<Hole>,

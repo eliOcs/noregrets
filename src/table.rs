@@ -14,6 +14,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
+#[derive(Clone)]
 pub struct Table {
     pub real: Hand,
     pub shadow: Hand,

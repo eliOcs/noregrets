@@ -18,6 +18,7 @@
 
 use crate::abstraction::{AbsAction, Token};
 use crate::bot::Policy;
+use crate::cfr::sample_index;
 use crate::cards::{fresh_deck, Card, Hole};
 use crate::engine::{Hand, HandConfig, PlayerAction};
 use crate::eval::{eval_hole_board, HandValue};
@@ -428,6 +429,21 @@ impl Lbr<'_> {
         ranges: &[Option<BotRange>],
         rng: &mut SmallRng,
     ) -> AbsAction {
+        self.action_multiway_with(table, ranges, rng, &mut |_, _, _| None)
+    }
+
+    /// `action_multiway` with the bots' fold probabilities from `folds`:
+    /// given the real table, the simulated actions since it (LBR's bet,
+    /// then the responders' folds) and the responder to act, the
+    /// probability that it folds with each combo, or None for the
+    /// blueprint's.
+    pub fn action_multiway_with(
+        &self,
+        table: &Table,
+        ranges: &[Option<BotRange>],
+        rng: &mut SmallRng,
+        folds: &mut dyn FnMut(&Table, &[(usize, AbsAction)], usize) -> Option<Vec<f64>>,
+    ) -> AbsAction {
         let h = &table.real;
         let me = h.to_act().expect("LBR acts in a live hand");
         let n = h.num_players();
@@ -472,6 +488,7 @@ impl Lbr<'_> {
             let mut hist2 = table.hist.clone();
             hist2.push(a.token());
             let board_v = board.to_vec();
+            let mut line = vec![(me, a)];
 
             // Walk the responders in order along the everyone-folds line.
             let mut p_all_fold = 1.0;
@@ -489,6 +506,7 @@ impl Lbr<'_> {
                     break;
                 };
                 let Some(rj) = ranges[j].as_ref() else { break };
+                let modelled = folds(table, &line, j);
                 let res: Vec<(f64, f64)> = rj
                     .weights
                     .par_iter()
@@ -497,7 +515,10 @@ impl Lbr<'_> {
                         if w <= 0.0 {
                             return (0.0, 0.0);
                         }
-                        let pf = self.action_prob(ci, &board_v, &hist2, &resp_acts, fold_idx);
+                        let pf = match &modelled {
+                            Some(m) => m[ci],
+                            None => self.action_prob(ci, &board_v, &hist2, &resp_acts, fold_idx),
+                        };
                         (w * pf, w * (1.0 - pf))
                     })
                     .collect();
@@ -515,6 +536,7 @@ impl Lbr<'_> {
                 any = true;
                 sim.apply(self.policy.abs.concrete(&sim, AbsAction::Fold));
                 hist2.push(AbsAction::Fold.token());
+                line.push((j, AbsAction::Fold));
             }
             if !any {
                 continue;
@@ -552,7 +574,9 @@ pub fn run_lbr_multiway(
     runouts: NonZeroU32,
     seed: u64,
     search: Option<crate::bot::SearchParams>,
+    model_search: bool,
 ) -> LbrResult {
+    assert!(!model_search || search.is_some(), "modelling the search needs a searching bot");
     let n = cfg.num_players.get();
     let bb = cfg.blinds.bb() as f64;
     let lbr = Lbr::new(policy, runouts);
@@ -584,18 +608,66 @@ pub fn run_lbr_multiway(
             // With `search`, the bot seats resolve postflop decisions
             // online (shared public-history range tracker, one search
             // session per seat) so the LBR faces the bot as it actually
-            // plays. The LBR's own range model of the bot stays the
-            // blueprint (it cannot see the resolved strategy).
+            // plays. The LBR's own model of the bot stays the blueprint,
+            // unless `model_search`: then every bot decision is solved for
+            // all combos (`search_dist_all`), the bot acts from its own
+            // combo's row, and the LBR updates ranges and predicts folds
+            // from those rows. Solves made for predictions are cached by
+            // history, so a bot that reaches a predicted spot plays the
+            // predicted strategy.
             let mut tracker = search.map(|_| crate::search::RangeTracker::new(n));
             let mut sessions: Vec<crate::bot::SearchSession> =
                 (0..n).map(|_| crate::bot::SearchSession::new()).collect();
+            let mut solved: std::collections::HashMap<Vec<Token>, (crate::bot::DecisionDist, crate::bot::SearchSession)> =
+                std::collections::HashMap::new();
+            let mut model_rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0x50DE);
             let mut guard = 0;
             while let Some(p) = table.real.to_act() {
                 guard += 1;
                 assert!(guard < 400, "multiway LBR hand did not terminate");
                 let street_before = table.real.street();
                 let a = if p == lbr_seat {
-                    lbr.action_multiway(&table, &ranges, &mut rng)
+                    match (model_search, search, tracker.as_ref()) {
+                        (true, Some(params), Some(tr)) => {
+                            let mut folds = |real: &Table, line: &[(usize, AbsAction)], j: usize| {
+                                let mut st = real.clone();
+                                let mut tr = tr.clone();
+                                for &(q, a) in line {
+                                    tr.observe(q, a, &st.shadow, &st.hist, &*policy.strategies, &policy.abs);
+                                    st.apply_abs(a, &policy.abs);
+                                }
+                                let (dist, _) = solved.entry(st.hist.clone()).or_insert_with(|| {
+                                    let mut sess = sessions[j].clone();
+                                    let d = policy.search_dist_all(
+                                        &st.real, &st.shadow, &st.hist, params, &train_cfg, &tr, &mut sess,
+                                        Some(&st.round), &mut model_rng,
+                                    );
+                                    (d, sess)
+                                });
+                                let f = dist.acts.iter().position(|&x| x == AbsAction::Fold)?;
+                                Some(dist.probs.iter().map(|row| row[f]).collect())
+                            };
+                            lbr.action_multiway_with(&table, &ranges, &mut rng, &mut folds)
+                        }
+                        _ => lbr.action_multiway(&table, &ranges, &mut rng),
+                    }
+                } else if let (true, Some(params), Some(tr)) = (model_search, search, tracker.as_ref()) {
+                    let (dist, sess) = solved.remove(&table.hist).unwrap_or_else(|| {
+                        let mut sess = sessions[p].clone();
+                        let d = policy.search_dist_all(
+                            &table.real, &table.shadow, &table.hist, params, &train_cfg, tr, &mut sess,
+                            Some(&table.round), &mut model_rng,
+                        );
+                        (d, sess)
+                    });
+                    sessions[p] = sess;
+                    let idx = sample_index(&dist.probs[table.real.hole(p).index()], &mut rng);
+                    if let Some(r) = ranges[p].as_mut() {
+                        for (w, row) in r.weights.iter_mut().zip(&dist.probs) {
+                            *w *= row[idx];
+                        }
+                    }
+                    dist.acts[idx]
                 } else {
                     let acts = policy.abs.abstract_actions(&table.shadow);
                     let a = match (search, tracker.as_ref()) {
@@ -814,6 +886,18 @@ mod tests {
         );
     }
 
+    /// Modelling the search runs end to end: every bot decision is solved
+    /// for all combos and the probe finishes with a finite result.
+    #[test]
+    fn multiway_lbr_models_the_search() {
+        let policy = empty_policy();
+        let cfg = HandConfig { num_players: Players::new(3).unwrap(), ..HandConfig::default() };
+        let params = crate::bot::SearchParams { time_ms: 20, max_iters: 200, ..Default::default() };
+        let r = run_lbr_multiway(&policy, &cfg, 12, NonZeroU32::new(8).unwrap(), 3, Some(params), true);
+        assert_eq!(r.hands, 12);
+        assert!(r.mbb_per_hand.is_finite() && r.ci95.is_finite());
+    }
+
     /// Multiway probe: a table of five calling stations must be crushed,
     /// the run must be bit-for-bit reproducible per seed, and joint equity
     /// must be exact at the extremes.
@@ -821,8 +905,8 @@ mod tests {
     fn multiway_lbr_crushes_stations_and_is_deterministic() {
         let policy = empty_policy();
         let cfg = HandConfig::default(); // 6-max
-        let a = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None);
-        let b = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None);
+        let a = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false);
+        let b = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false);
         assert_eq!(a.mbb_per_hand.to_bits(), b.mbb_per_hand.to_bits(), "not deterministic");
         assert!(
             a.mbb_per_hand - a.ci95 > 1_000.0,

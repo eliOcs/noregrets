@@ -16,7 +16,9 @@ use crate::mirror::{Stored, Strategies};
 use crate::search::RangeTracker;
 use crate::table::RoundRoot;
 use crate::valuenet::ValueNet;
+use crate::cards::Hole;
 use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -198,13 +200,65 @@ pub fn preflop_allin_spot(real: &Hand) -> bool {
         && (0..real.num_players()).all(|q| !live(q) || real.all_in(q) || real.street_commit(q) < bet)
 }
 
+/// Calling minus folding for `hero` facing a preflop all-in on the dealt
+/// hand `h`: everyone still to act folds, and the board runs out.
+fn allin_call_minus_fold(h: &Hand, hero: usize) -> f64 {
+    let value = |first: PlayerAction| {
+        let mut g = h.clone();
+        g.apply(first);
+        while !g.is_terminal() {
+            let a = if g.can_check() || g.to_act() == Some(hero) { PlayerAction::CheckCall } else { PlayerAction::Fold };
+            g.apply(a);
+        }
+        g.utilities()[hero] as f64
+    };
+    value(PlayerAction::CheckCall) - value(PlayerAction::Fold)
+}
+
+/// Every combo's root strategy from an exact two-player solve, over the
+/// solve's own (possibly slim) action list. Combos the solve has no
+/// strategy for, those its ranges or the board rule out, check/call. The
+/// caller has checked that the actor's own combo has one.
+fn solver_rows(root: impl Fn(Hole) -> Option<(Vec<AbsAction>, Vec<f64>)> + Sync) -> DecisionDist {
+    use rayon::prelude::*;
+    let combos = crate::search::all_combos();
+    let rows: Vec<Option<(Vec<AbsAction>, Vec<f64>)>> = combos.par_iter().map(|&c| root(c)).collect();
+    let acts = rows
+        .iter()
+        .flatten()
+        .map(|(a, _)| a.clone())
+        .next()
+        .expect("a solve has a strategy for some combo");
+    let call = acts.iter().position(|&a| a == AbsAction::CheckCall).expect("check/call is always legal");
+    let probs = rows
+        .into_iter()
+        .map(|r| match r {
+            Some((a, p)) if a == acts => p,
+            _ => {
+                let mut p = vec![0.0; acts.len()];
+                p[call] = 1.0;
+                p
+            }
+        })
+        .collect();
+    DecisionDist { acts, probs }
+}
+
+/// A decision's action distribution for every hole combo the actor could
+/// hold, as `Policy::search_dist_all` computes it.
+pub struct DecisionDist {
+    pub acts: Vec<AbsAction>,
+    /// One distribution over `acts` per combo, indexed by `Hole::index`.
+    pub probs: Vec<Vec<f64>>,
+}
+
 /// Early-exit purity threshold for adaptive search.
 const ADAPTIVE_PURITY: f64 = 0.97;
 
 /// Per-hand search state for continual resolving: the most recent exact
 /// turn resolve's carry (opponent CFVs at river entries) plus where in the
 /// action history that resolve was rooted. Reset every hand.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SearchSession {
     pub carry: Option<crate::turn::TurnCarry>,
     pub root_hist_len: usize,
@@ -408,20 +462,7 @@ impl Policy {
             }
             let mut h = real.clone();
             h.resample_hidden_with(&want, rng);
-            let value = |first: PlayerAction| {
-                let mut g = h.clone();
-                g.apply(first);
-                while !g.is_terminal() {
-                    let a = if g.can_check() || g.to_act() == Some(hero) {
-                        PlayerAction::CheckCall
-                    } else {
-                        PlayerAction::Fold
-                    };
-                    g.apply(a);
-                }
-                g.utilities()[hero] as f64
-            };
-            let d = value(PlayerAction::CheckCall) - value(PlayerAction::Fold);
+            let d = allin_call_minus_fold(&h, hero);
             n += 1;
             sum += d;
             sq += d * d;
@@ -500,6 +541,220 @@ impl Policy {
             // turn/river solvers take over on later streets.
             return self.blueprint_dist(shadow, hist, rng);
         }
+        let solver = self.multiway_solver(real, hist, params, train_cfg, tracker, round);
+        let p = real.to_act().expect("a search decision needs a live hand");
+        let bucket = solver.abs.bucket(real.hole(p), real.board(), rng);
+        if let Some(s) = solver.avg_strategy(bucket, hist) {
+            let acts = solver.abs.abstract_actions(real);
+            if s.len() == acts.len() {
+                return (acts, s);
+            }
+        }
+        self.blueprint_dist(shadow, hist, rng)
+    }
+
+    /// What the search plays here with every hole combo the acting seat
+    /// could hold: the same routing and solves as `search_dist`, read for
+    /// all 1,326 combos instead of the actor's own. Each solve depends on
+    /// the public state and the tracked ranges, not on the actor's cards
+    /// (except the preflop all-in resolve, computed here per hand class),
+    /// so a probe that acts from `probs[hole]` and knows `probs` knows the
+    /// searching bot's policy exactly, as it knows the blueprint's.
+    /// `session` takes the turn resolve's carry, as in `search_dist`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_dist_all(
+        &self,
+        real: &Hand,
+        shadow: &Hand,
+        hist: &[Token],
+        params: SearchParams,
+        train_cfg: &TrainConfig,
+        tracker: &RangeTracker,
+        session: &mut SearchSession,
+        round: Option<&RoundRoot>,
+        rng: &mut SmallRng,
+    ) -> DecisionDist {
+        let live2 = real.live_count() == 2;
+        // As in `search_dist`, an exact solve answers only when it has a
+        // strategy for the actor's own combo.
+        let own = real.hole(real.to_act().expect("a search decision needs a live hand"));
+        match real.street() {
+            Street::Preflop => {
+                return self
+                    .preflop_allin_all(real, shadow, tracker, rng)
+                    .unwrap_or_else(|| self.blueprint_all(shadow, hist));
+            }
+            Street::River if live2 => {
+                if let Some(s) = self.river_solver(real, hist, tracker, params, Some(session), rng) {
+                    if s.root_strategy(own).is_some() {
+                        return solver_rows(|c| s.root_strategy(c));
+                    }
+                }
+            }
+            Street::Turn if live2 => {
+                if !params.turn_solve {
+                    return self.blueprint_all(shadow, hist);
+                }
+                if let Some(s) = self.turn_solver(real, hist, tracker, params, Some(session), rng) {
+                    return solver_rows(|c| s.root_strategy(c));
+                }
+            }
+            Street::Flop if live2 => {
+                if let Some(net) = &self.value_net {
+                    if let Some(s) = self.flop_net_solver(real, tracker, net, params) {
+                        if s.root_strategy(own).is_some() {
+                            return solver_rows(|c| s.root_strategy(c));
+                        }
+                    }
+                }
+                return self.blueprint_all(shadow, hist);
+            }
+            _ => {}
+        }
+        let solver = self.multiway_solver(real, hist, params, train_cfg, Some(tracker), round);
+        let acts = solver.abs.abstract_actions(real);
+        let board = real.board();
+        self.rows_or_blueprint(shadow, hist, |c| {
+            let mut rng = SmallRng::seed_from_u64(0);
+            let s = solver.avg_strategy(solver.abs.bucket(c, board, &mut rng), hist)?;
+            (s.len() == acts.len()).then(|| (acts.clone(), s))
+        })
+    }
+
+    /// The blueprint's distribution for every combo, as `blueprint_dist`
+    /// gives it (check/call where the infoset is unseen).
+    pub fn blueprint_all(&self, h: &Hand, hist: &[Token]) -> DecisionDist {
+        self.rows_or_blueprint(h, hist, |_| None)
+    }
+
+    /// One row per combo from `solved`, the blueprint's row where it has
+    /// none. Combos the board blocks get the blueprint's row too; their
+    /// weight in any range is zero.
+    fn rows_or_blueprint(
+        &self,
+        h: &Hand,
+        hist: &[Token],
+        solved: impl Fn(Hole) -> Option<(Vec<AbsAction>, Vec<f64>)> + Sync,
+    ) -> DecisionDist {
+        use rayon::prelude::*;
+        let acts = self.abs.abstract_actions(h);
+        let board = h.board();
+        let call = acts.iter().position(|&a| a == AbsAction::CheckCall).expect("check/call is always legal");
+        let probs = crate::search::all_combos()
+            .par_iter()
+            .map(|&c| {
+                if let Some((a, p)) = solved(c) {
+                    if a == acts {
+                        return p;
+                    }
+                }
+                let mut rng = SmallRng::seed_from_u64(0);
+                let bucket = self.abs.bucket(c, board, &mut rng);
+                match self.strategies.lookup(bucket, hist, &acts).fits() {
+                    Some(w) => w.probs(),
+                    None => {
+                        let mut p = vec![0.0; acts.len()];
+                        p[call] = 1.0;
+                        p
+                    }
+                }
+            })
+            .collect();
+        DecisionDist { acts, probs }
+    }
+
+    /// `preflop_allin_dist` for every combo: one call/fold estimate per
+    /// hand class from `ALLIN_SAMPLES` playouts against the all-in players'
+    /// near-hard ranges, spread over the class's suit combos. None when
+    /// the spot does not qualify.
+    fn preflop_allin_all(
+        &self,
+        real: &Hand,
+        shadow: &Hand,
+        tracker: &RangeTracker,
+        rng: &mut SmallRng,
+    ) -> Option<DecisionDist> {
+        use rayon::prelude::*;
+        const ALLIN_SAMPLES: usize = 1_000;
+        if !preflop_allin_spot(real) {
+            return None;
+        }
+        let acts = self.abs.abstract_actions(shadow);
+        let fold = acts.iter().position(|&a| a == AbsAction::Fold)?;
+        let call = acts.iter().position(|&a| a == AbsAction::CheckCall)?;
+        let hero = real.to_act()?;
+        let jammers: Vec<usize> = (0..real.num_players())
+            .filter(|&q| q != hero && !real.folded(q) && real.all_in(q))
+            .collect();
+        let combos = crate::search::all_combos();
+        let mut classes: Vec<Vec<usize>> = vec![Vec::new(); 169];
+        for (ci, c) in combos.iter().enumerate() {
+            classes[crate::abstraction::preflop_bucket(**c) as usize].push(ci);
+        }
+        let base_seed: u64 = rand::Rng::random(rng);
+        let p_call: Vec<f64> = classes
+            .par_iter()
+            .enumerate()
+            .map(|(k, members)| {
+                let mut rng = SmallRng::seed_from_u64(base_seed ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                let (mut n, mut sum, mut sq) = (0u32, 0.0f64, 0.0f64);
+                for i in 0..ALLIN_SAMPLES {
+                    let hole = combos[members[i % members.len()]];
+                    let mut used = [false; 52];
+                    used[hole[0].index()] = true;
+                    used[hole[1].index()] = true;
+                    let mut want = [None; crate::engine::MAX_PLAYERS];
+                    want[hero] = Some(hole);
+                    let mut ok = true;
+                    for &q in &jammers {
+                        match tracker.sample_hard(q, &mut used, &mut rng) {
+                            Some(x) => want[q] = Some(x),
+                            None => ok = false,
+                        }
+                    }
+                    if !ok {
+                        continue;
+                    }
+                    let mut h = real.clone();
+                    h.resample_hidden_with(&want, &mut rng);
+                    let d = allin_call_minus_fold(&h, hero);
+                    n += 1;
+                    sum += d;
+                    sq += d * d;
+                }
+                if n == 0 {
+                    return 0.0;
+                }
+                let mean = sum / n as f64;
+                let se = ((sq / n as f64 - mean * mean).max(0.0) / n as f64).sqrt().max(1e-9);
+                1.0 / (1.0 + (-1.7 * mean / se).exp())
+            })
+            .collect();
+        let probs = combos
+            .iter()
+            .map(|c| {
+                let pc = p_call[crate::abstraction::preflop_bucket(**c) as usize];
+                let mut p = vec![0.0; acts.len()];
+                p[fold] = 1.0 - pc;
+                p[call] = pc;
+                p
+            })
+            .collect();
+        Some(DecisionDist { acts, probs })
+    }
+
+    /// The multiway MCCFR resolve behind `search_dist`: depth-limited to
+    /// the end of the flop, rooted at the start of the betting round when
+    /// `round_root` allows it.
+    fn multiway_solver(
+        &self,
+        real: &Hand,
+        hist: &[Token],
+        params: SearchParams,
+        train_cfg: &TrainConfig,
+        tracker: Option<&RangeTracker>,
+        round: Option<&RoundRoot>,
+    ) -> Trainer {
         let leaf = (real.street() == Street::Flop).then(|| LeafCfg {
             strategies: self.strategies.clone(),
             abs: self.abs.clone(),
@@ -515,7 +770,7 @@ impl Policy {
                 && r.real.street() == real.street()
                 && r.hist_len + r.actions.len() == hist.len()
         });
-        let solver = match round {
+        match round {
             Some(r) => {
                 let spine = Spine {
                     hero: p,
@@ -536,15 +791,7 @@ impl Policy {
                 )
             }
             None => resolve_subgame(sabs, train_cfg, real, hist, params, tracker, leaf, None),
-        };
-        let bucket = solver.abs.bucket(real.hole(p), real.board(), rng);
-        if let Some(s) = solver.avg_strategy(bucket, hist) {
-            let acts = solver.abs.abstract_actions(real);
-            if s.len() == acts.len() {
-                return (acts, s);
-            }
         }
-        self.blueprint_dist(shadow, hist, rng)
     }
 
     /// Depth-limited flop resolve over both players' tracked ranges with
@@ -558,6 +805,17 @@ impl Policy {
         params: SearchParams,
         _rng: &mut SmallRng,
     ) -> Option<(Vec<AbsAction>, Vec<f64>)> {
+        self.flop_net_solver(h, tracker, net, params)?.root_strategy(h.hole(h.to_act()?))
+    }
+
+    /// The solved depth-limited flop resolve behind `flop_net_dist`.
+    fn flop_net_solver<'a>(
+        &self,
+        h: &Hand,
+        tracker: &RangeTracker,
+        net: &'a ValueNet,
+        params: SearchParams,
+    ) -> Option<crate::flop::FlopSolver<'a>> {
         let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let net_ref: &ValueNet = net;
@@ -575,7 +833,7 @@ impl Policy {
         } else {
             solver.solve(10_000, params.time_ms);
         }
-        solver.root_strategy(h.hole(hero))
+        Some(solver)
     }
 
     /// Exact turn+river resolve over both players' tracked ranges (vector
@@ -592,6 +850,20 @@ impl Policy {
         session: Option<&mut SearchSession>,
         rng: &mut SmallRng,
     ) -> Option<(Vec<AbsAction>, Vec<f64>)> {
+        self.turn_solver(h, hist, tracker, params, session, rng)?.root_strategy(h.hole(h.to_act()?))
+    }
+
+    /// The solved turn resolve behind `turn_dist`; stores its carry in
+    /// `session`.
+    fn turn_solver(
+        &self,
+        h: &Hand,
+        hist: &[Token],
+        tracker: &RangeTracker,
+        params: SearchParams,
+        session: Option<&mut SearchSession>,
+        rng: &mut SmallRng,
+    ) -> Option<crate::turn::TurnSolver> {
         let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let mut solver = crate::turn::TurnSolver::build(
@@ -605,12 +877,14 @@ impl Policy {
             solver = solver.with_gadget(alt);
         }
         solver.solve(200, params.time_ms);
-        let dist = solver.root_strategy(h.hole(hero))?;
+        // The carry comes from the hero's resolve only when it has a
+        // strategy for the hero's combo, as before.
+        solver.root_strategy(h.hole(hero))?;
         if let Some(sess) = session {
             sess.carry = Some(solver.extract_carry());
             sess.root_hist_len = hist.len();
         }
-        Some(dist)
+        Some(solver)
     }
 
     /// Exact river resolve over both players' tracked ranges. None when the
@@ -627,6 +901,19 @@ impl Policy {
         session: Option<&SearchSession>,
         rng: &mut SmallRng,
     ) -> Option<(Vec<AbsAction>, Vec<f64>)> {
+        self.river_solver(h, hist, tracker, params, session, rng)?.root_strategy(h.hole(h.to_act()?))
+    }
+
+    /// The solved river resolve behind `river_dist`.
+    fn river_solver(
+        &self,
+        h: &Hand,
+        hist: &[Token],
+        tracker: &RangeTracker,
+        params: SearchParams,
+        session: Option<&SearchSession>,
+        rng: &mut SmallRng,
+    ) -> Option<crate::river::RiverSolver> {
         let hero = h.to_act()?;
         let villain = (0..h.num_players()).find(|&p| p != hero && !h.folded(p))?;
         let mut solver = crate::river::RiverSolver::build(
@@ -654,7 +941,7 @@ impl Policy {
         } else {
             solver.solve(10_000, params.time_ms, params.qre_lambda);
         }
-        solver.root_strategy(h.hole(hero))
+        Some(solver)
     }
 
     /// Rollout-estimated safety values for the opponent: for each of its
@@ -1394,6 +1681,84 @@ mod tests {
         let (solved, _) = dist(true);
         assert_eq!(solved, [AbsAction::CheckCall, AbsAction::AllIn], "the slim solve keeps no Pluribus size");
         assert!(SearchParams::default().turn_solve, "the solve stays the default");
+    }
+
+    /// `search_dist_all` reads the same solve `search_dist` acts from: on a
+    /// heads-up turn (exact solve, fixed iterations) the actor's own row is
+    /// its distribution, and every combo gets a full row.
+    #[test]
+    fn all_combo_search_matches_the_actors_own() {
+        use crate::search::RangeTracker;
+        use crate::table::Table;
+        let front = parse_cards("2c 7d Ah Kd Qs Js Ts 3h 4d").unwrap();
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
+        let abs = Arc::new(abs_small());
+        let policy = Policy::new(
+            Blueprint {
+                strategies: Default::default(),
+                iterations: 0,
+                num_players: Players::TWO,
+                abs_cfg: AbsConfig::default(),
+                centroids: None,
+            },
+            abs.clone(),
+        );
+        let train_cfg = TrainConfig { hand: hand_cfg.clone(), prune_after: u64::MAX, ..TrainConfig::default() };
+        let mut table = Table::new(&hand_cfg, 0, Deck::with_front(&front).unwrap());
+        for _ in 0..4 {
+            table.apply_abs(AbsAction::CheckCall, &abs);
+        }
+        let mut tracker = RangeTracker::new(2);
+        tracker.exclude(table.real.board());
+        let params = SearchParams { time_ms: 60_000, max_iters: 20, ..SearchParams::default() };
+        let mut rng = SmallRng::seed_from_u64(3);
+        let (acts, own) = policy.search_dist(
+            &table.real, &table.shadow, &table.hist, params, &train_cfg, Some(&tracker), None, None, &mut rng,
+        );
+        let all = policy.search_dist_all(
+            &table.real, &table.shadow, &table.hist, params, &train_cfg, &tracker, &mut SearchSession::new(), None,
+            &mut rng,
+        );
+        assert_eq!(all.acts, acts);
+        assert_eq!(all.probs.len(), crate::search::NUM_COMBOS);
+        assert_eq!(all.probs[table.real.hole(1).index()], own);
+        for row in &all.probs {
+            assert_eq!(row.len(), acts.len());
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+        }
+    }
+
+    /// The all-combo preflop all-in resolve calls a heads-up jam with aces
+    /// and folds seven-deuce, against a jammer who could hold anything.
+    #[test]
+    fn all_combo_allin_resolve_calls_aces_and_folds_trash() {
+        use crate::search::RangeTracker;
+        let hand_cfg = HandConfig::new(Players::TWO, Stack::new(2_000).unwrap());
+        let abs = Arc::new(abs_small());
+        let policy = Policy::new(
+            Blueprint {
+                strategies: Default::default(),
+                iterations: 0,
+                num_players: Players::TWO,
+                abs_cfg: AbsConfig::default(),
+                centroids: None,
+            },
+            abs.clone(),
+        );
+        let mut h = Hand::new(&hand_cfg, 0, fresh_deck());
+        h.apply(abs.concrete(&h, AbsAction::AllIn));
+        assert!(preflop_allin_spot(&h));
+        let tracker = RangeTracker::new(2);
+        let mut rng = SmallRng::seed_from_u64(9);
+        let d = policy.preflop_allin_all(&h, &h, &tracker, &mut rng).unwrap();
+        let call = d.acts.iter().position(|&a| a == AbsAction::CheckCall).unwrap();
+        let p = |cards: &str| {
+            let c = parse_cards(cards).unwrap();
+            d.probs[Hole::new(c[0], c[1]).unwrap().index()][call]
+        };
+        assert!(p("As Ad") > 0.99, "aces call {}", p("As Ad"));
+        assert!(p("Ad Ac") > 0.99);
+        assert!(p("7c 2d") < 0.05, "seven-deuce calls {}", p("7c 2d"));
     }
 
     /// Nested re-solving of off-tree bets: the bot must price an off-tree

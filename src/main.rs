@@ -621,6 +621,12 @@ enum Cmd {
         /// measured more exploitable).
         #[arg(long)]
         turn_blueprint: bool,
+        /// With --search: the LBR models the bot as it searches, not as
+        /// the blueprint. Every bot decision is solved for all combos, the
+        /// bot acts from its own, and the LBR's range updates and fold
+        /// predictions use the same solves (much slower).
+        #[arg(long, requires = "search", requires = "multiway")]
+        model_search: bool,
         /// Postflop card buckets inside multiway resolves (equity
         /// quantiles; exact per board on the river). Default: the
         /// blueprint's.
@@ -1611,6 +1617,7 @@ fn main() {
             search_iters,
             decision_root,
             turn_blueprint,
+            model_search,
             search_buckets,
             stack,
         } => {
@@ -1633,7 +1640,7 @@ fn main() {
                 if multiway { "multiway, LBR seat rotating" } else { "blind-vs-blind" },
                 cfg.num_players,
                 if search {
-                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" })
+                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" }) + if model_search { ", LBR models the search" } else { "" }
                 } else {
                     String::new()
                 }
@@ -1643,7 +1650,7 @@ fn main() {
             }
             let started = std::time::Instant::now();
             let r = if multiway {
-                lbr::run_lbr_multiway(&policy, &cfg, hands, runouts, seed, params)
+                lbr::run_lbr_multiway(&policy, &cfg, hands, runouts, seed, params, model_search)
             } else {
                 lbr::run_lbr(&policy, &cfg, hands, runouts, seed)
             };

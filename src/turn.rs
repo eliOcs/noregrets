@@ -67,6 +67,7 @@ struct ChanceNode {
 /// node of a solved turn subgame, keyed by the turn betting line — the
 /// carry for continual resolving: they become the river resolve's gadget
 /// alternatives, replacing rollout estimates.
+#[derive(Clone)]
 pub struct TurnCarry {
     /// Betting line (action tokens since the resolve root) → chance index.
     paths: std::collections::HashMap<Vec<Token>, usize>,
