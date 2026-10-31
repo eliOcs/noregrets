@@ -17,17 +17,18 @@
 //! blind seats. Reported in mbb/hand: 0 = unexploitable by this probe.
 
 use crate::abstraction::{AbsAction, Token};
-use crate::bot::Policy;
+use crate::bot::{DecisionDist, Policy, SearchParams, SearchSession};
 use crate::cfr::sample_index;
 use crate::cards::{fresh_deck, Card, Hole};
-use crate::engine::{Hand, HandConfig, PlayerAction};
+use crate::engine::{Hand, HandConfig, PlayerAction, Street};
 use crate::eval::{eval_hole_board, HandValue};
-use crate::search::{all_combos, NUM_COMBOS};
+use crate::search::{all_combos, RangeTracker, NUM_COMBOS};
 use crate::table::Table;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 /// The LBR agent's belief over the bot's hole cards.
 pub struct BotRange {
@@ -559,6 +560,37 @@ impl Lbr<'_> {
     }
 }
 
+/// What `--model-search` needs to solve a bot decision for every combo.
+struct ModelCtx<'a> {
+    policy: &'a Policy,
+    params: SearchParams,
+    train_cfg: &'a crate::cfr::TrainConfig,
+    /// Preflop answers by history, shared across hands.
+    preflop: &'a dashmap::DashMap<Vec<Token>, Arc<DecisionDist>, ahash::RandomState>,
+}
+
+impl ModelCtx<'_> {
+    /// The decision at `t` for every combo, and the actor's session after
+    /// it (a turn solve stores its carry there).
+    fn solve(&self, t: &Table, tr: &RangeTracker, mut sess: SearchSession, rng: &mut SmallRng) -> (Arc<DecisionDist>, SearchSession) {
+        let preflop = t.real.street() == Street::Preflop;
+        if preflop {
+            if let Some(d) = self.preflop.get(&t.hist) {
+                return (d.clone(), sess);
+            }
+        }
+        let d = Arc::new(self.policy.search_dist_all(
+            &t.real, &t.shadow, &t.hist, self.params, self.train_cfg, tr, &mut sess, Some(&t.round), rng,
+        ));
+        if preflop {
+            // Solved outside the map's lock (the solve runs on the pool);
+            // a racing duplicate defers to the first one stored.
+            return (self.preflop.entry(t.hist.clone()).or_insert(d).clone(), sess);
+        }
+        (d, sess)
+    }
+}
+
 /// Run the multiway LBR probe: LBR in one seat (rotating every hand),
 /// the bot in every other seat, all playing to showdown as normal. LBR
 /// tracks each bot seat's range with exact Bayes updates on the shared
@@ -585,6 +617,10 @@ pub fn run_lbr_multiway(
         prune_after: u64::MAX,
         ..crate::cfr::TrainConfig::default()
     };
+    // Model mode: preflop answers depend only on the action history (no
+    // board, ranges from public actions), so each is solved once and
+    // shared across hands.
+    let preflop: dashmap::DashMap<Vec<Token>, Arc<DecisionDist>, ahash::RandomState> = Default::default();
     let results: Vec<f64> = (0..hands)
         .into_par_iter()
         .map(|i| {
@@ -618,7 +654,7 @@ pub fn run_lbr_multiway(
             let mut tracker = search.map(|_| crate::search::RangeTracker::new(n));
             let mut sessions: Vec<crate::bot::SearchSession> =
                 (0..n).map(|_| crate::bot::SearchSession::new()).collect();
-            let mut solved: std::collections::HashMap<Vec<Token>, (crate::bot::DecisionDist, crate::bot::SearchSession)> =
+            let mut solved: std::collections::HashMap<Vec<Token>, (Arc<DecisionDist>, SearchSession)> =
                 std::collections::HashMap::new();
             let mut model_rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0x50DE);
             let mut guard = 0;
@@ -637,12 +673,8 @@ pub fn run_lbr_multiway(
                                     st.apply_abs(a, &policy.abs);
                                 }
                                 let (dist, _) = solved.entry(st.hist.clone()).or_insert_with(|| {
-                                    let mut sess = sessions[j].clone();
-                                    let d = policy.search_dist_all(
-                                        &st.real, &st.shadow, &st.hist, params, &train_cfg, &tr, &mut sess,
-                                        Some(&st.round), &mut model_rng,
-                                    );
-                                    (d, sess)
+                                    let model = ModelCtx { policy, params, train_cfg: &train_cfg, preflop: &preflop };
+                                    model.solve(&st, &tr, sessions[j].clone(), &mut model_rng)
                                 });
                                 let f = dist.acts.iter().position(|&x| x == AbsAction::Fold)?;
                                 Some(dist.probs.iter().map(|row| row[f]).collect())
@@ -653,12 +685,8 @@ pub fn run_lbr_multiway(
                     }
                 } else if let (true, Some(params), Some(tr)) = (model_search, search, tracker.as_ref()) {
                     let (dist, sess) = solved.remove(&table.hist).unwrap_or_else(|| {
-                        let mut sess = sessions[p].clone();
-                        let d = policy.search_dist_all(
-                            &table.real, &table.shadow, &table.hist, params, &train_cfg, tr, &mut sess,
-                            Some(&table.round), &mut model_rng,
-                        );
-                        (d, sess)
+                        let model = ModelCtx { policy, params, train_cfg: &train_cfg, preflop: &preflop };
+                        model.solve(&table, tr, sessions[p].clone(), &mut model_rng)
                     });
                     sessions[p] = sess;
                     let idx = sample_index(&dist.probs[table.real.hole(p).index()], &mut rng);

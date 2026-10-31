@@ -665,8 +665,9 @@ impl Policy {
 
     /// `preflop_allin_dist` for every combo: one call/fold estimate per
     /// hand class from `ALLIN_SAMPLES` playouts against the all-in players'
-    /// near-hard ranges, spread over the class's suit combos. None when
-    /// the spot does not qualify.
+    /// near-hard ranges, spread over the class's suit combos. That is the
+    /// 4,000-playout cap `preflop_allin_dist` reaches within its usual
+    /// budget, so the mixing matches. None when the spot does not qualify.
     fn preflop_allin_all(
         &self,
         real: &Hand,
@@ -675,7 +676,7 @@ impl Policy {
         rng: &mut SmallRng,
     ) -> Option<DecisionDist> {
         use rayon::prelude::*;
-        const ALLIN_SAMPLES: usize = 1_000;
+        const ALLIN_SAMPLES: usize = 4_000;
         if !preflop_allin_spot(real) {
             return None;
         }
