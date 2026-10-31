@@ -348,6 +348,130 @@ pub fn action_ev(bot: &Bot, cfg: &HandConfig, line: &str, class: &str, deals: u6
     })
 }
 
+/// One preflop decision of `reach`.
+pub struct ReachRow {
+    /// The line in `--line` tokens.
+    pub tokens: String,
+    /// The line with seats and sizes, e.g. "UTG r2.9, MP a".
+    pub line: String,
+    pub seat: usize,
+    /// Probability that every other seat plays the line (card removal
+    /// ignored). External sampling enumerates the actor's own actions and
+    /// samples everyone else's, so this is the share of the actor's
+    /// traversals that reach the node: regret updates per combo are about
+    /// iterations / players * opp_reach / 1326.
+    pub opp_reach: f64,
+    /// Probability that the actor's own hand plays the line: with
+    /// `opp_reach`, how often the bot arrives here in self-play.
+    pub own_reach: f64,
+    /// `serve --search` answers here with the preflop all-in resolve, not
+    /// the blueprint.
+    pub resolved: bool,
+    /// Combos (of 1,326) whose infoset holds no usable strategy.
+    pub unseen: usize,
+    /// With a second blueprint: the mean total variation distance between
+    /// the two strategies over the actor's classes, weighted by how often
+    /// each class plays the line under the first. None when no class does.
+    pub diff: Option<f64>,
+}
+
+/// Every preflop decision of the menu's tree, with how often training and
+/// self-play reach it under the blueprint's own strategies. Ranges are per
+/// hand class, unseen infosets check/call as served.
+pub fn reach(bot: &Bot, other: Option<&Bot>, cfg: &HandConfig) -> Vec<ReachRow> {
+    let classes = all_classes()
+        .iter()
+        .map(|name| {
+            let cs = class_combos(name).expect("all_classes names valid classes");
+            (crate::abstraction::preflop_bucket(*cs[0]), cs.len())
+        })
+        .collect();
+    let mut walk = ReachWalk { bot, other, classes, rows: Vec::new() };
+    let h = Hand::new(cfg, 0, fresh_deck());
+    let mut ranges = vec![vec![1.0; 169]; h.num_players()];
+    walk.node(&h, &mut Vec::new(), &mut Vec::new(), &mut ranges);
+    walk.rows
+}
+
+struct ReachWalk<'a> {
+    bot: &'a Bot,
+    other: Option<&'a Bot>,
+    /// (preflop bucket, combos) per class.
+    classes: Vec<(u16, usize)>,
+    rows: Vec<ReachRow>,
+}
+
+impl ReachWalk<'_> {
+    /// `ranges[q][c]`: the probability that seat q holding class c played
+    /// q's actions of the line so far.
+    fn node(&mut self, h: &Hand, hist: &mut Vec<Token>, line: &mut Vec<(String, String)>, ranges: &mut [Vec<f64>]) {
+        let Some(p) = h.to_act() else { return };
+        if h.street() != Street::Preflop {
+            return;
+        }
+        let mass = |r: &[f64]| r.iter().zip(&self.classes).map(|(&w, &(_, n))| w * n as f64).sum::<f64>() / 1326.0;
+        let opp_reach = (0..ranges.len()).filter(|&q| q != p).map(|q| mass(&ranges[q])).product();
+        let own_reach = mass(&ranges[p]);
+        let acts = self.bot.abs.abstract_actions(h);
+        let served = |bot: &Bot, bucket: u16| -> Option<Vec<f64>> {
+            bot.strategies.lookup(bucket, hist, &acts).fits().map(|w| w.probs())
+        };
+        let check_call: Vec<f64> = acts.iter().map(|&a| if a == AbsAction::CheckCall { 1.0 } else { 0.0 }).collect();
+        let mut unseen = 0;
+        let sigma: Vec<Vec<f64>> = self
+            .classes
+            .iter()
+            .map(|&(bucket, n)| {
+                served(self.bot, bucket).unwrap_or_else(|| {
+                    unseen += n;
+                    check_call.clone()
+                })
+            })
+            .collect();
+        let diff = self.other.and_then(|other| {
+            let (mut sum, mut weight) = (0.0, 0.0);
+            for (c, &(bucket, n)) in self.classes.iter().enumerate() {
+                let w = ranges[p][c] * n as f64;
+                let theirs = served(other, bucket).unwrap_or_else(|| check_call.clone());
+                let tv: f64 = sigma[c].iter().zip(&theirs).map(|(a, b)| (a - b).abs()).sum::<f64>() / 2.0;
+                sum += w * tv;
+                weight += w;
+            }
+            (weight > 0.0).then(|| sum / weight)
+        });
+        self.rows.push(ReachRow {
+            tokens: line.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" "),
+            line: line.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join(", "),
+            seat: p,
+            opp_reach,
+            own_reach,
+            resolved: crate::bot::preflop_allin_spot(h),
+            unseen,
+            diff,
+        });
+        let before = ranges[p].clone();
+        for (i, &a) in acts.iter().enumerate() {
+            for (c, w) in ranges[p].iter_mut().enumerate() {
+                *w = before[c] * sigma[c][i];
+            }
+            let token = match a {
+                AbsAction::Fold => "f".to_string(),
+                AbsAction::CheckCall => "c".to_string(),
+                AbsAction::AllIn => "a".to_string(),
+                AbsAction::Bet(s) => format!("r{}", s.index()),
+            };
+            line.push((token, format!("{} {}", SEATS[p], action_name(h, &self.bot.abs, a))));
+            hist.push(a.token());
+            let mut child = h.clone();
+            child.apply(self.bot.abs.concrete(h, a));
+            self.node(&child, hist, line, ranges);
+            hist.pop();
+            line.pop();
+        }
+        ranges[p] = before;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +501,31 @@ mod tests {
             .collect();
         assert_eq!(names, ["fold", "call", "r6.0", "r9.1", "r15.3", "all-in"]);
         assert!(node(&HandConfig::default(), &abs, "f f f r9", fresh_deck()).is_err());
+    }
+
+    #[test]
+    fn reach_follows_the_served_check_call_of_an_empty_blueprint() {
+        use crate::cfr::{Blueprint, StrategyMap};
+        use crate::engine::{Players, Stack};
+        let bp = Blueprint {
+            strategies: StrategyMap::default(),
+            iterations: 0,
+            num_players: Players::new(2).unwrap(),
+            abs_cfg: AbsConfig::default(),
+            centroids: None,
+        };
+        let bot = Bot { abs: std::sync::Arc::new(Abstraction::new(bp.abs_cfg.clone())), strategies: Box::new(bp) };
+        let cfg = HandConfig::new(Players::new(2).unwrap(), Stack::new(1000).unwrap());
+        let rows = reach(&bot, None, &cfg);
+        assert!(rows.len() > 2);
+        // Heads-up preflop the seats alternate: the last token is the
+        // opponent's, the one before it the actor's, and so on.
+        for r in &rows {
+            let toks: Vec<&str> = r.tokens.split_whitespace().collect();
+            let played = |parity: usize| toks.iter().rev().skip(parity).step_by(2).all(|&t| t == "c");
+            assert_eq!(r.opp_reach, if played(0) { 1.0 } else { 0.0 }, "{}", r.tokens);
+            assert_eq!(r.own_reach, if played(1) { 1.0 } else { 0.0 }, "{}", r.tokens);
+            assert_eq!(r.unseen, 1326);
+        }
     }
 }

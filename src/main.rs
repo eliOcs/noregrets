@@ -410,6 +410,29 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// How often training reaches every preflop decision of the menu's
+    /// tree under the blueprint's own strategies: estimated regret updates
+    /// per combo, grouped into tiers, for the decisions `serve` answers
+    /// from the blueprint and those it gives to the preflop all-in resolve
+    PreflopReach {
+        #[arg(long)]
+        blueprint: String,
+        /// The blueprint's training stack in chips.
+        #[arg(long, default_value_t = Stack::DEFAULT)]
+        stack: Stack,
+        /// Iterations that trained the preflop strategies (800M for
+        /// it-800m, 1B for its refine-preflop overlay).
+        #[arg(long, default_value_t = 800_000_000)]
+        iters: u64,
+        /// Also write every decision as CSV here.
+        #[arg(long)]
+        csv: Option<String>,
+        /// A second blueprint of the same abstraction, e.g. another seed:
+        /// how far its strategies are from the first's at each decision,
+        /// per tier (the noise left at that many updates).
+        #[arg(long)]
+        compare: Option<String>,
+    },
     /// What each action at a preflop node is worth to a hand class when
     /// everyone, the hero included, plays the blueprint afterwards, against
     /// the blueprint's own ranges for the line.
@@ -1275,6 +1298,58 @@ fn main() {
                     }
                     println!();
                 }
+            }
+        }
+        Cmd::PreflopReach { blueprint, stack, iters, csv, compare } => {
+            let (bot, cfg) = load_bot(&blueprint, stack);
+            let other = compare.map(|path| load_bot(&path, stack).0);
+            let rows = preflop::reach(&bot, other.as_ref(), &cfg);
+            let per_combo = |r: &preflop::ReachRow| iters as f64 / cfg.num_players.get() as f64 * r.opp_reach / 1326.0;
+            if let Some(path) = &csv {
+                let mut out = String::from("tokens,line,seat,opp_reach,own_reach,updates_per_combo,resolved,unseen_combos,diff\n");
+                for r in &rows {
+                    out += &format!(
+                        "{},\"{}\",{},{:e},{:e},{:.3},{},{},{}\n",
+                        r.tokens,
+                        r.line,
+                        preflop::SEATS[r.seat],
+                        r.opp_reach,
+                        r.own_reach,
+                        per_combo(r),
+                        r.resolved,
+                        r.unseen,
+                        r.diff.map_or(String::new(), |d| format!("{d:.4}"))
+                    );
+                }
+                std::fs::write(path, out).unwrap_or_else(|e| die(&format!("cannot write '{path}': {e}")));
+            }
+            let total: f64 = rows.iter().map(|r| r.opp_reach * r.own_reach).sum();
+            let tiers = [1e5, 1e4, 1e3, 1e2, 1e1, 1.0, 0.0];
+            println!("{} preflop decisions, {} answered by the all-in resolve under serve --search", rows.len(), rows.iter().filter(|r| r.resolved).count());
+            println!("est. regret updates per combo | blueprint decisions | resolved decisions | share of self-play preflop decisions (blueprint / resolved){}", if other.is_some() { " | mean strategy distance to --compare" } else { "" });
+            let mut hi = f64::INFINITY;
+            for lo in tiers {
+                let tier: Vec<&preflop::ReachRow> = rows.iter().filter(|r| (lo..hi).contains(&per_combo(r))).collect();
+                let share = |resolved: bool| {
+                    100.0 * tier.iter().filter(|r| r.resolved == resolved).map(|r| r.opp_reach * r.own_reach).sum::<f64>() / total + 0.0
+                };
+                let diffs: Vec<f64> = tier.iter().filter_map(|r| r.diff).collect();
+                let diff = if other.is_none() {
+                    String::new()
+                } else if diffs.is_empty() {
+                    " | -".to_string()
+                } else {
+                    format!(" | {:.3}", diffs.iter().sum::<f64>() / diffs.len() as f64)
+                };
+                let label = if lo == 0.0 { format!("< {hi}") } else if hi.is_infinite() { format!(">= {lo}") } else { format!("{lo} - {hi}") };
+                println!(
+                    "{label:>29} | {:>19} | {:>18} | {:.4}% / {:.4}%{diff}",
+                    tier.iter().filter(|r| !r.resolved).count(),
+                    tier.iter().filter(|r| r.resolved).count(),
+                    share(false),
+                    share(true)
+                );
+                hi = lo;
             }
         }
         Cmd::ActionEv { blueprint, stack, line, hands, deals, bucket_table, seed } => {
