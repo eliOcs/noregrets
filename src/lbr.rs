@@ -559,10 +559,12 @@ impl Lbr<'_> {
     }
 }
 
-/// Floor on the likelihoods the LBR's own solve of a bot decision gives:
-/// the bot plays its own solve, so an action the LBR's sample of it never
-/// takes must not erase the combos that took it.
-const MODEL_FLOOR: f64 = 0.01;
+/// Floor on the likelihoods the LBR's own solve of a bot decision gives,
+/// only so a range can never reach all zeros. It must stay tiny: at 0.01
+/// the floored ranges cost the LBR 227 mbb/hand against the plain
+/// blueprint (8 seeds), and at 0 the model path reproduces the
+/// blueprint-model probe exactly.
+const MODEL_FLOOR: f64 = 1e-6;
 
 /// What `--model-search` needs to solve a bot decision for every combo.
 struct ModelCtx<'a> {
