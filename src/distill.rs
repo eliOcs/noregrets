@@ -280,6 +280,9 @@ mod tests {
                 adaptive: false,
                 round_root: true,
                 turn_solve: true,
+                preflop_allin: true,
+                river_solve: true,
+                mccfr_resolve: true,
             },
             seed: 42,
         };

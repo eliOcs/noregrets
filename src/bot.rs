@@ -171,6 +171,15 @@ pub struct SearchParams {
     /// turns from the blueprint measured more exploitable (BASELINES,
     /// 31 Oct 2026), so it stays an A/B arm.
     pub turn_solve: bool,
+    /// Preflop spots facing an all-in are resolved by rollouts (default)
+    /// instead of played from the blueprint.
+    pub preflop_allin: bool,
+    /// Two-player rivers are re-solved exactly (default) instead of played
+    /// from the blueprint.
+    pub river_solve: bool,
+    /// Spots no exact solver takes (multiway postflop) get an MCCFR
+    /// resolve (default) instead of the blueprint.
+    pub mccfr_resolve: bool,
 }
 
 impl Default for SearchParams {
@@ -183,6 +192,9 @@ impl Default for SearchParams {
             adaptive: false,
             round_root: true,
             turn_solve: true,
+            preflop_allin: true,
+            river_solve: true,
+            mccfr_resolve: true,
         }
     }
 }
@@ -495,7 +507,7 @@ impl Policy {
         rng: &mut SmallRng,
     ) -> (Vec<AbsAction>, Vec<f64>) {
         if real.street() == Street::Preflop {
-            if let Some(tr) = tracker {
+            if let (Some(tr), true) = (tracker, params.preflop_allin) {
                 if let Some(d) = self.preflop_allin_dist(real, shadow, tr, params, rng) {
                     return d;
                 }
@@ -504,7 +516,7 @@ impl Policy {
         }
         // River spots with two live players: exact range-vs-range CFR+
         // (river.rs) instead of sampled MCCFR.
-        if real.street() == Street::River && real.live_count() == 2 {
+        if real.street() == Street::River && real.live_count() == 2 && params.river_solve {
             if let Some(tr) = tracker {
                 let sess = session.as_deref();
                 if let Some(d) = self.river_dist(real, hist, tr, params, sess, rng) {
@@ -539,6 +551,9 @@ impl Policy {
             // blueprint here (measured: ≈0 in self-play; vs Slumbot it got
             // 200bb in at ~18% equity on 51 flops in 10k hands). The exact
             // turn/river solvers take over on later streets.
+            return self.blueprint_dist(shadow, hist, rng);
+        }
+        if !params.mccfr_resolve {
             return self.blueprint_dist(shadow, hist, rng);
         }
         let solver = self.multiway_solver(real, hist, params, train_cfg, tracker, round);
@@ -580,11 +595,13 @@ impl Policy {
         let own = real.hole(real.to_act().expect("a search decision needs a live hand"));
         match real.street() {
             Street::Preflop => {
-                return self
-                    .preflop_allin_all(real, shadow, tracker, rng)
+                return params
+                    .preflop_allin
+                    .then(|| self.preflop_allin_all(real, shadow, tracker, rng))
+                    .flatten()
                     .unwrap_or_else(|| self.blueprint_all(shadow, hist));
             }
-            Street::River if live2 => {
+            Street::River if live2 && params.river_solve => {
                 if let Some(s) = self.river_solver(real, hist, tracker, params, Some(session), rng) {
                     if s.root_strategy(own).is_some() {
                         return solver_rows(|c| s.root_strategy(c));
@@ -610,6 +627,9 @@ impl Policy {
                 return self.blueprint_all(shadow, hist);
             }
             _ => {}
+        }
+        if !params.mccfr_resolve {
+            return self.blueprint_all(shadow, hist);
         }
         let solver = self.multiway_solver(real, hist, params, train_cfg, Some(tracker), round);
         let acts = solver.abs.abstract_actions(real);
@@ -1229,6 +1249,9 @@ mod tests {
                 adaptive: false,
                 round_root: true,
                 turn_solve: true,
+                preflop_allin: true,
+                river_solve: true,
+                mccfr_resolve: true,
             },
             None,
             None,
@@ -1390,6 +1413,9 @@ mod tests {
                 adaptive: false,
                 round_root: true,
                 turn_solve: true,
+                preflop_allin: true,
+                river_solve: true,
+                mccfr_resolve: true,
             },
             &train_cfg,
             Some(&tracker),
@@ -1450,6 +1476,9 @@ mod tests {
                     adaptive: false,
                     round_root: true,
                     turn_solve: true,
+                    preflop_allin: true,
+                    river_solve: true,
+                    mccfr_resolve: true,
                 },
                 &train_cfg,
                 Some(&tracker),
@@ -1501,6 +1530,9 @@ mod tests {
             adaptive: false,
             round_root: true,
             turn_solve: true,
+            preflop_allin: true,
+            river_solve: true,
+            mccfr_resolve: true,
         };
         let mut table = Table::new(&hand_cfg, 0, deck);
         for _ in 0..4 {
@@ -1617,6 +1649,9 @@ mod tests {
             adaptive: false,
             round_root: true,
             turn_solve: true,
+            preflop_allin: true,
+            river_solve: true,
+            mccfr_resolve: true,
         };
         let mut table = Table::new(&hand_cfg, 0, deck);
         table.apply_abs(AbsAction::CheckCall, &abs);
@@ -1831,6 +1866,9 @@ mod tests {
             adaptive: false,
             round_root: true,
             turn_solve: true,
+            preflop_allin: true,
+            river_solve: true,
+            mccfr_resolve: true,
         };
         // EV of calling 800 real: .42(+900) - .58(900) = -144 < fold -100.
         let mut rng = SmallRng::seed_from_u64(9);
@@ -1920,6 +1958,9 @@ mod tests {
                 adaptive: false,
                 round_root: true,
                 turn_solve: true,
+                preflop_allin: true,
+                river_solve: true,
+                mccfr_resolve: true,
             },
             Some(&tracker),
             Some(LeafCfg {

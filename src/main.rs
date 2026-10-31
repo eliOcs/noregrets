@@ -74,6 +74,17 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// A search component `lbr --blueprint-at` can switch to the blueprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum SearchPart {
+    /// Preflop spots facing an all-in (rollout resolve).
+    PreflopAllin,
+    /// Two-player rivers (exact river solve).
+    River,
+    /// Multiway postflop spots (MCCFR resolve).
+    Mccfr,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Train a blueprint strategy with parallel Linear MCCFR.
@@ -621,6 +632,10 @@ enum Cmd {
         /// measured more exploitable).
         #[arg(long)]
         turn_blueprint: bool,
+        /// Search components to switch off: those spots play the
+        /// blueprint (ablation arms, e.g. `--blueprint-at river,mccfr`).
+        #[arg(long, value_delimiter = ',', requires = "search")]
+        blueprint_at: Vec<SearchPart>,
         /// With --search: the LBR models the bot as it searches, not as
         /// the blueprint. Every bot decision is solved for all combos, the
         /// bot acts from its own, and the LBR's range updates and fold
@@ -1138,6 +1153,9 @@ fn main() {
                 time_ms: search_ms,
                 max_iters: search_iters,
                 turn_solve: !turn_blueprint,
+                preflop_allin: true,
+                river_solve: true,
+                mccfr_resolve: true,
                 ..SearchParams::default()
             };
             let load = |path: &str, depth: Stack| -> serve::Served {
@@ -1617,6 +1635,7 @@ fn main() {
             search_iters,
             decision_root,
             turn_blueprint,
+            blueprint_at,
             model_search,
             search_buckets,
             stack,
@@ -1626,6 +1645,9 @@ fn main() {
                 max_iters: search_iters,
                 round_root: !decision_root,
                 turn_solve: !turn_blueprint,
+                preflop_allin: !blueprint_at.contains(&SearchPart::PreflopAllin),
+                river_solve: !blueprint_at.contains(&SearchPart::River),
+                mccfr_resolve: !blueprint_at.contains(&SearchPart::Mccfr),
                 ..SearchParams::default()
             });
             let policy = load_policy_strat(&blueprint, strat_prev.as_deref())
@@ -1640,7 +1662,7 @@ fn main() {
                 if multiway { "multiway, LBR seat rotating" } else { "blind-vs-blind" },
                 cfg.num_players,
                 if search {
-                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" }) + if model_search { ", LBR models the search" } else { "" }
+                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" }) + &if blueprint_at.is_empty() { String::new() } else { format!(", blueprint at {blueprint_at:?}") } + if model_search { ", LBR models the search" } else { "" }
                 } else {
                     String::new()
                 }
@@ -1689,6 +1711,9 @@ fn main() {
                 max_iters: search_iters,
                 round_root: !decision_root,
                 turn_solve: !turn_blueprint,
+                preflop_allin: true,
+                river_solve: true,
+                mccfr_resolve: true,
                 ..SearchParams::default()
             });
             let policy = load_policy_strat(&blueprint, strat_prev.as_deref())
