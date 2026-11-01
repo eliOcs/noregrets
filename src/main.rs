@@ -645,6 +645,12 @@ enum Cmd {
         /// a blueprint player).
         #[arg(long, requires = "search")]
         widen: bool,
+        /// With --multiway: also split the winnings by the least-reached
+        /// bot decision of each hand (the other seats' blueprint reach,
+        /// which external sampling trains in proportion to), an estimate
+        /// of the training-mass breakdown for blueprints without `.mass`.
+        #[arg(long, requires = "multiway")]
+        by_reach: bool,
         /// With --search: the LBR models the bot as it searches, not as
         /// the blueprint. Every bot decision is solved for all combos, the
         /// bot acts from its own, and the LBR's range updates and fold
@@ -1664,6 +1670,7 @@ fn main() {
             blueprint_at,
             safe_resolve,
             widen,
+            by_reach,
             model_search,
             search_buckets,
             stack,
@@ -1701,7 +1708,14 @@ fn main() {
             }
             let started = std::time::Instant::now();
             let r = if multiway {
-                lbr::run_lbr_multiway(&policy, &cfg, hands, runouts, seed, params, model_search, widen)
+                lbr::run_lbr_multiway(
+                    &policy,
+                    &cfg,
+                    hands,
+                    runouts,
+                    seed,
+                    lbr::MultiwayOpts { search: params, model_search, widen, by_reach },
+                )
             } else {
                 lbr::run_lbr(&policy, &cfg, hands, runouts, seed)
             };
@@ -1729,6 +1743,50 @@ fn main() {
                         100.0 * b.share
                     );
                 }
+            }
+            if !r.by_reach.is_empty() {
+                println!("by the least-reached bot decision in the hand (the other seats' blueprint reach):");
+                for b in &r.by_reach {
+                    println!(
+                        "  reach {:>9.3e} – {:<9.3e} {:>6} hands  {:+8.1} ±{:<7.1} mbb/hand  {:5.1}% of the winnings",
+                        lbr::reach_of(b.lo),
+                        lbr::reach_of(b.hi),
+                        b.hands,
+                        b.mbb_per_hand,
+                        b.ci95,
+                        100.0 * b.share
+                    );
+                }
+            }
+            if !r.by_end.is_empty() {
+                println!("by how the hand ended:");
+                for e in &r.by_end {
+                    println!(
+                        "  {:<24} {:>6} hands  {:+8.1} ±{:<7.1} mbb/hand  {:5.1}% of the winnings",
+                        e.label, e.hands, e.mbb_per_hand, e.ci95, 100.0 * e.share
+                    );
+                }
+            }
+            if !r.by_seat.is_empty() {
+                println!("by the LBR's seat:");
+                for e in &r.by_seat {
+                    println!(
+                        "  {:<4} {:>6} hands  {:+8.1} ±{:<7.1} mbb/hand, {:+7.1} of it from hands that ended preflop",
+                        e.label, e.hands, e.mbb_per_hand, e.ci95, e.share
+                    );
+                }
+            }
+            if !r.steals.is_empty() {
+                println!("hands the bots folded preflop, by the LBR's last raise:");
+                for e in &r.steals {
+                    println!(
+                        "  {:<14} {:>6} hands  {:+8.1} mbb/hand there, {:+7.1} mbb/hand overall",
+                        e.label, e.hands, e.mbb_per_hand, e.ci95
+                    );
+                }
+            }
+            if let Some(c) = r.mass_reach_rank_corr {
+                println!("rank correlation of each hand's thinnest mass and least reach: {c:.3}");
             }
             if let Some(r) = bot::fallback_report() {
                 println!("{r}");

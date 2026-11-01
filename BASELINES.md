@@ -2226,3 +2226,39 @@ no gate could see its cost until the probe modelled the search.
 
 Recommendation: serve blueprint-only (`serve` without `--search`) until
 a search configuration beats the blueprint on this gate.
+
+## 2026-11-01 — Where the 800M plateau is won: preflop folds, in well-trained nodes
+
+New `lbr --multiway` breakdowns (always printed): by how the hand ended,
+by the LBR's seat, and, for the hands the bots folded preflop, by the
+LBR's last raise; `--by-reach` splits by the least-reached bot decision
+in the hand (other seats' blueprint reach, the training-visit proxy;
+Spearman 0.90 against training mass at 30M). `it-800m-r.nrc`, 20k hands.
+
+| Seed | 1 | 2 | 3 | 4 |
+|---|--:|--:|--:|--:|
+| total | +611 | +714 | +464 | +578 |
+| ended preflop, net | +354 | +350 | +373 | +352 |
+| ended on the flop, net | +82 | +108 | +122 | +100 |
+| ended on the turn, net | −14 | −13 | −15 | −13 |
+| ended on the river, net | −53 | −83 | −58 | −68 |
+| showdown | +243 | +328 | +55 | +209 |
+| bots fold to the LBR's open (≈1.47bb each, ~30% of hands) | +440 | +433 | +444 | +432 |
+| bots fold to its 3-bet (≈3.0bb, ~6%) | +174 | +177 | +180 | +180 |
+| bots fold to its 4-bet or more (≈8.1bb, ~4%) | +319 | +321 | +325 | +336 |
+| bots fold to its all-in | +8 | +19 | +17 | +14 |
+
+The LBR folding preflop (after a failed steal, or its blind) costs
+≈ −600 of that. By seat (8 seeds, total / of it ended preflop): UTG
++811/+503, MP +518/+560, CO +688/+417, BTN +669/+426, SB +402/+131, BB
++858/+210. By reach (seed 1): the three most-reached fifths carry
++712, +879 and +662 mbb/hand at tight intervals; the least-reached fifth
+is noise (±1041).
+
+Reading: the stable part of the bound is preflop, and the steadiest
+single source is the bots giving up the pot to a re-raise after
+putting chips in (4-bet steals: 4% of hands, ~+320 overall, ±1% across
+seeds). These are well-trained nodes, so more iterations do not fix it
+(as 1.6B showed); the training changes worth screening are those that
+change how preflop strategies converge, measured with this breakdown at
+30M before anything is rented.

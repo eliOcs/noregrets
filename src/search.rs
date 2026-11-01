@@ -153,6 +153,13 @@ impl RangeTracker {
         &self.weights[seat]
     }
 
+    /// Total near-hard weight of `seat`'s range. Its ratio across an
+    /// `observe` is the blueprint's probability of the observed action,
+    /// averaged over the range (each combo's floored at `HARD_FLOOR`).
+    pub fn hard_total(&self, seat: usize) -> f64 {
+        self.hard[seat].iter().sum()
+    }
+
     #[cfg(test)]
     pub fn weight(&self, seat: usize, hole: Hole) -> f64 {
         self.weights[seat][hole.index()]

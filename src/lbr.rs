@@ -256,6 +256,186 @@ pub struct LbrResult {
     /// thinnest blueprint infoset a bot seat played from (an unseen one
     /// counts as mass 0), thinnest group first. Empty otherwise.
     pub by_mass: Vec<MassBand>,
+    /// With `by_reach`: the hands split the same way by the least-reached
+    /// bot decision, where a decision's reach is the probability that the
+    /// other seats, playing the blueprint, take the hand's line to it.
+    /// External sampling trains an infoset about in proportion to that
+    /// reach, so this estimates the mass breakdown for blueprints without
+    /// one. `lo`/`hi` are `reach_byte`s.
+    pub by_reach: Vec<MassBand>,
+    /// With both breakdowns: Spearman's rank correlation between each
+    /// hand's thinnest mass and its least reach, over the hands.
+    pub mass_reach_rank_corr: Option<f64>,
+    /// Multiway: the hands by how they ended (`EndRow`), in a fixed order;
+    /// empty for the blind-vs-blind probe.
+    pub by_end: Vec<EndRow>,
+    /// Multiway: the hands by the LBR's seat relative to the button
+    /// (`hands` and `mbb_per_hand` over all its hands there; `share` is
+    /// this seat's mean from hands that ended preflop, in mbb/hand).
+    pub by_seat: Vec<EndRow>,
+    /// Multiway: the hands that ended preflop with the bots folding, by
+    /// the LBR's last preflop raise (open, 3-bet, 4-bet or more, all-in).
+    pub steals: Vec<EndRow>,
+}
+
+const STEAL_LABELS: [&str; 4] = ["open", "3-bet", "4-bet or more", "all-in"];
+
+/// `steals` rows from (winnings, the steal kind if the hand was one).
+fn steal_rows(results: &[(f64, Option<usize>)]) -> Vec<EndRow> {
+    let total: f64 = results.iter().map(|r| r.0).sum();
+    let hands = results.len() as f64;
+    (0..STEAL_LABELS.len())
+        .filter_map(|k| {
+            let xs: Vec<f64> = results.iter().filter(|r| r.1 == Some(k)).map(|r| r.0).collect();
+            if xs.is_empty() {
+                return None;
+            }
+            let n = xs.len() as f64;
+            let mean = xs.iter().sum::<f64>() / n;
+            Some(EndRow {
+                label: STEAL_LABELS[k].to_string(),
+                hands: xs.len() as u64,
+                mbb_per_hand: mean,
+                // Contribution to the overall mbb/hand, not a CI.
+                ci95: xs.iter().sum::<f64>() / hands,
+                share: if total != 0.0 { xs.iter().sum::<f64>() / total } else { 0.0 },
+            })
+        })
+        .collect()
+}
+
+/// A seat's name by its offset from the button (6-max names; others by
+/// offset).
+fn seat_name(offset: usize, n: usize) -> String {
+    let six = ["BTN", "SB", "BB", "UTG", "MP", "CO"];
+    match (n, offset) {
+        (6, k) => six[k].to_string(),
+        (_, 0) => "BTN".to_string(),
+        (_, 1) => "SB".to_string(),
+        (_, 2) => "BB".to_string(),
+        (_, k) => format!("BTN+{k}"),
+    }
+}
+
+/// `by_seat` rows from (winnings, end kind, seat offset).
+fn seat_rows(results: &[(f64, usize, usize)], n: usize) -> Vec<EndRow> {
+    (0..n)
+        .filter_map(|k| {
+            let at: Vec<(f64, usize)> = results.iter().filter(|r| r.2 == k).map(|r| (r.0, r.1)).collect();
+            if at.is_empty() {
+                return None;
+            }
+            let m = at.len() as f64;
+            let mean = at.iter().map(|r| r.0).sum::<f64>() / m;
+            let var = at.iter().map(|r| (r.0 - mean) * (r.0 - mean)).sum::<f64>() / (m - 1.0).max(1.0);
+            let preflop = at.iter().filter(|r| r.1 < 2).map(|r| r.0).sum::<f64>() / m;
+            Some(EndRow {
+                label: seat_name(k, n),
+                hands: at.len() as u64,
+                mbb_per_hand: mean,
+                ci95: 1.96 * (var / m).sqrt(),
+                share: preflop,
+            })
+        })
+        .collect()
+}
+
+/// Hands that ended one way: `label` names it, the rest as in `MassBand`.
+#[derive(Debug)]
+pub struct EndRow {
+    pub label: String,
+    pub hands: u64,
+    pub mbb_per_hand: f64,
+    pub ci95: f64,
+    pub share: f64,
+}
+
+/// How a hand ended, as an index into `END_LABELS`: at showdown, or on
+/// the street where the last fold came, split by whether the LBR folded.
+fn end_kind(h: &Hand, lbr_seat: usize) -> usize {
+    if h.live_count() > 1 {
+        return 8;
+    }
+    2 * h.street() as usize + usize::from(h.folded(lbr_seat))
+}
+
+const END_LABELS: [&str; 9] = [
+    "preflop, the bots fold",
+    "preflop, the LBR folds",
+    "flop, the bots fold",
+    "flop, the LBR folds",
+    "turn, the bots fold",
+    "turn, the LBR folds",
+    "river, the bots fold",
+    "river, the LBR folds",
+    "showdown",
+];
+
+fn end_rows(results: &[(f64, usize)]) -> Vec<EndRow> {
+    let total: f64 = results.iter().map(|r| r.0).sum();
+    (0..END_LABELS.len())
+        .filter_map(|k| {
+            let xs: Vec<f64> = results.iter().filter(|r| r.1 == k).map(|r| r.0).collect();
+            if xs.is_empty() {
+                return None;
+            }
+            let n = xs.len() as f64;
+            let mean = xs.iter().sum::<f64>() / n;
+            let var = xs.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (n - 1.0).max(1.0);
+            Some(EndRow {
+                label: END_LABELS[k].to_string(),
+                hands: xs.len() as u64,
+                mbb_per_hand: mean,
+                ci95: 1.96 * (var / n).sqrt(),
+                share: if total != 0.0 { xs.iter().sum::<f64>() / total } else { 0.0 },
+            })
+        })
+        .collect()
+}
+
+/// A reach probability as one byte that orders like it: 255 minus
+/// quarter steps of -log2(reach), so 255 is reach 1 and 0 is 2^-63.75 or
+/// less.
+pub fn reach_byte(reach: f64) -> u8 {
+    let steps = (-4.0 * reach.max(f64::MIN_POSITIVE).log2()).round().clamp(0.0, 255.0);
+    255 - steps as u8
+}
+
+/// The reach a `reach_byte` stands for (to a quarter octave).
+pub fn reach_of(byte: u8) -> f64 {
+    (-((255 - byte) as f64) / 4.0).exp2()
+}
+
+/// Spearman's rank correlation of two equally long samples (ties get
+/// their mean rank). None with fewer than 3 points or no variation.
+fn rank_corr(a: &[f64], b: &[f64]) -> Option<f64> {
+    fn ranks(x: &[f64]) -> Vec<f64> {
+        let mut idx: Vec<usize> = (0..x.len()).collect();
+        idx.sort_by(|&i, &j| x[i].total_cmp(&x[j]));
+        let mut r = vec![0.0; x.len()];
+        let mut i = 0;
+        while i < idx.len() {
+            let mut j = i;
+            while j + 1 < idx.len() && x[idx[j + 1]] == x[idx[i]] {
+                j += 1;
+            }
+            for &k in &idx[i..=j] {
+                r[k] = (i + j) as f64 / 2.0;
+            }
+            i = j + 1;
+        }
+        r
+    }
+    if a.len() < 3 || a.len() != b.len() {
+        return None;
+    }
+    let (ra, rb) = (ranks(a), ranks(b));
+    let n = ra.len() as f64;
+    let (ma, mb) = (ra.iter().sum::<f64>() / n, rb.iter().sum::<f64>() / n);
+    let cov: f64 = ra.iter().zip(&rb).map(|(x, y)| (x - ma) * (y - mb)).sum();
+    let va: f64 = ra.iter().map(|x| (x - ma) * (x - ma)).sum();
+    let vb: f64 = rb.iter().map(|y| (y - mb) * (y - mb)).sum();
+    (va > 0.0 && vb > 0.0).then(|| cov / (va * vb).sqrt())
 }
 
 /// Hands whose thinnest bot infoset had a mass byte in `lo..=hi`
@@ -278,6 +458,11 @@ pub struct MassBand {
 /// groups of about equal size, keeping hands with the same mass in one
 /// group.
 fn mass_bands(results: &[(f64, Option<u8>)], bands: usize) -> Vec<MassBand> {
+    bands_by(results, bands, true)
+}
+
+/// `mass_bands`, with key 0 split off on its own only if `zero_alone`.
+fn bands_by(results: &[(f64, Option<u8>)], bands: usize, zero_alone: bool) -> Vec<MassBand> {
     let mut v: Vec<(u8, f64)> = results.iter().filter_map(|&(x, m)| m.map(|m| (m, x))).collect();
     if v.is_empty() {
         return Vec::new();
@@ -285,7 +470,7 @@ fn mass_bands(results: &[(f64, Option<u8>)], bands: usize) -> Vec<MassBand> {
     v.sort_by_key(|&(m, _)| m);
     let total: f64 = results.iter().map(|r| r.0).sum();
     let mut out = Vec::new();
-    let unseen = v.iter().take_while(|r| r.0 == 0).count();
+    let unseen = if zero_alone { v.iter().take_while(|r| r.0 == 0).count() } else { 0 };
     let size = (v.len() - unseen).div_ceil(bands).max(1);
     let mut start = 0;
     while start < v.len() {
@@ -368,6 +553,11 @@ pub fn run_lbr(policy: &Policy, cfg: &HandConfig, hands: u64, runouts: NonZeroU3
         mbb_per_hand: mean,
         ci95: 1.96 * (var / results.len() as f64).sqrt(),
         by_mass: Vec::new(),
+        by_reach: Vec::new(),
+        mass_reach_rank_corr: None,
+        by_end: Vec::new(),
+        by_seat: Vec::new(),
+        steals: Vec::new(),
     }
 }
 
@@ -654,6 +844,19 @@ impl ModelCtx<'_> {
     }
 }
 
+/// How `run_lbr_multiway` plays the bots and what it reports.
+#[derive(Clone, Copy, Default)]
+pub struct MultiwayOpts {
+    /// The bots search, with these parameters.
+    pub search: Option<SearchParams>,
+    /// The LBR models the search (see `run_lbr_multiway`).
+    pub model_search: bool,
+    /// The bots' tracker widens off-model actions, as `serve`'s does.
+    pub widen: bool,
+    /// Break the winnings down by blueprint reach (`LbrResult::by_reach`).
+    pub by_reach: bool,
+}
+
 /// Run the multiway LBR probe: LBR in one seat (rotating every hand),
 /// the bot in every other seat, all playing to showdown as normal. LBR
 /// tracks each bot seat's range with exact Bayes updates on the shared
@@ -668,10 +871,9 @@ pub fn run_lbr_multiway(
     hands: u64,
     runouts: NonZeroU32,
     seed: u64,
-    search: Option<crate::bot::SearchParams>,
-    model_search: bool,
-    widen: bool,
+    opts: MultiwayOpts,
 ) -> LbrResult {
+    let MultiwayOpts { search, model_search, widen, by_reach } = opts;
     assert!(!model_search || search.is_some(), "modelling the search needs a searching bot");
     let n = cfg.num_players.get();
     let bb = cfg.blinds.bb() as f64;
@@ -686,7 +888,7 @@ pub fn run_lbr_multiway(
     // shared across hands.
     let preflop: dashmap::DashMap<Vec<Token>, Arc<DecisionDist>, ahash::RandomState> = Default::default();
     let track_mass = policy.strategies.has_mass();
-    let results: Vec<(f64, Option<u8>)> = (0..hands)
+    let results: Vec<(f64, Option<u8>, Option<f64>, usize, usize, Option<usize>)> = (0..hands)
         .into_par_iter()
         .map(|i| {
             let mut rng =
@@ -695,6 +897,14 @@ pub fn run_lbr_multiway(
             // tracking it leaves the hands unchanged.
             let mut mass_rng = SmallRng::seed_from_u64(seed ^ i ^ 0x4D41_5353);
             let mut thinnest: Option<u8> = None;
+            // `by_reach`: every seat's blueprint range, the LBR's
+            // included (in training it is a blueprint seat too), and the
+            // log of each seat's reach along the line.
+            let mut reach_tr = by_reach.then(|| crate::search::RangeTracker::new(n));
+            let mut log_reach = vec![0.0f64; n];
+            let mut least_reach: Option<f64> = None;
+            // The LBR's last preflop raise, as a `STEAL_LABELS` index.
+            let mut lbr_raise: Option<usize> = None;
             let button = rng.random_range(0..n);
             let lbr_seat = (i % n as u64) as usize;
             let mut deck = fresh_deck();
@@ -742,6 +952,11 @@ pub fn run_lbr_multiway(
                     let b = policy.abs.bucket(table.real.hole(p), table.real.board(), &mut mass_rng);
                     let m = policy.strategies.mass(b, &table.hist).unwrap_or(0);
                     thinnest = Some(thinnest.map_or(m, |t| t.min(m)));
+                }
+                if by_reach && p != lbr_seat {
+                    let others: f64 = (0..n).filter(|&q| q != p).map(|q| log_reach[q]).sum();
+                    let r = others.exp();
+                    least_reach = Some(least_reach.map_or(r, |l| l.min(r)));
                 }
                 let street_before = table.real.street();
                 let a = if p == lbr_seat {
@@ -810,6 +1025,23 @@ pub fn run_lbr_multiway(
                 if let Some(tr) = tracker.as_mut() {
                     tr.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
                 }
+                if p == lbr_seat && table.real.street() == Street::Preflop {
+                    if let AbsAction::Bet(_) | AbsAction::AllIn = a {
+                        let raises = table
+                            .hist
+                            .iter()
+                            .filter(|t| !matches!(t, Token::Fold | Token::CheckCall | Token::StreetSep))
+                            .count();
+                        lbr_raise = Some(if a == AbsAction::AllIn { 3 } else { raises.min(2) });
+                    }
+                }
+                if let Some(rt) = reach_tr.as_mut() {
+                    let before = rt.hard_total(p);
+                    rt.observe(p, a, &table.shadow, &table.hist, &*policy.strategies, &policy.abs);
+                    if before > 0.0 {
+                        log_reach[p] += (rt.hard_total(p) / before).max(f64::MIN_POSITIVE).ln();
+                    }
+                }
                 table.apply_abs(a, &policy.abs);
                 if table.real.street() != street_before {
                     for r in ranges.iter_mut().flatten() {
@@ -818,11 +1050,18 @@ pub fn run_lbr_multiway(
                     if let Some(tr) = tracker.as_mut() {
                         tr.exclude(table.real.board());
                     }
+                    if let Some(rt) = reach_tr.as_mut() {
+                        rt.exclude(table.real.board());
+                    }
                 }
             }
-            (table.real.utilities()[lbr_seat] as f64 / bb * 1000.0, thinnest)
+            (table.real.utilities()[lbr_seat] as f64 / bb * 1000.0, thinnest, least_reach, end_kind(&table.real, lbr_seat), (lbr_seat + n - button) % n, lbr_raise)
         })
         .collect();
+    let by_mass_in: Vec<(f64, Option<u8>)> = results.iter().map(|r| (r.0, r.1)).collect();
+    let by_reach_in: Vec<(f64, Option<u8>)> = results.iter().map(|r| (r.0, r.2.map(reach_byte))).collect();
+    let (ms, rs): (Vec<f64>, Vec<f64>) =
+        results.iter().filter_map(|r| Some((r.1? as f64, r.2?.max(f64::MIN_POSITIVE).ln()))).unzip();
 
     let mean = results.iter().map(|r| r.0).sum::<f64>() / results.len() as f64;
     let var = results.iter().map(|r| (r.0 - mean) * (r.0 - mean)).sum::<f64>()
@@ -831,7 +1070,12 @@ pub fn run_lbr_multiway(
         hands,
         mbb_per_hand: mean,
         ci95: 1.96 * (var / results.len() as f64).sqrt(),
-        by_mass: mass_bands(&results, 5),
+        by_mass: mass_bands(&by_mass_in, 5),
+        by_reach: bands_by(&by_reach_in, 5, false),
+        mass_reach_rank_corr: rank_corr(&ms, &rs),
+        by_end: end_rows(&results.iter().map(|r| (r.0, r.3)).collect::<Vec<_>>()),
+        by_seat: seat_rows(&results.iter().map(|r| (r.0, r.3, r.4)).collect::<Vec<_>>(), n),
+        steals: steal_rows(&results.iter().map(|r| (r.0, if r.3 == 0 { r.5 } else { None })).collect::<Vec<_>>()),
     }
 }
 
@@ -1004,6 +1248,24 @@ mod tests {
     }
 
     #[test]
+    fn reach_bytes_order_like_reach_and_rank_correlation_is_spearman() {
+        assert_eq!(reach_byte(1.0), 255);
+        assert_eq!(reach_byte(0.5), 251);
+        assert_eq!(reach_byte(0.0), 0);
+        assert!(reach_byte(1e-3) < reach_byte(1e-2));
+        for r in [1.0, 0.3, 1e-4, 1e-12] {
+            let back = reach_of(reach_byte(r));
+            assert!((back.log2() - r.log2()).abs() <= 0.125 + 1e-9, "{r} -> {back}");
+        }
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        assert!((rank_corr(&a, &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap() - 1.0).abs() < 1e-12);
+        assert!((rank_corr(&a, &[5.0, 4.0, 3.0, 2.0, 1.0]).unwrap() + 1.0).abs() < 1e-12);
+        // Monotone but not linear: still 1.
+        assert!((rank_corr(&a, &[1.0, 8.0, 27.0, 64.0, 1e6]).unwrap() - 1.0).abs() < 1e-12);
+        assert!(rank_corr(&a, &[1.0; 5]).is_none());
+    }
+
+    #[test]
     fn mass_bands_split_by_thinnest_mass_and_share_the_winnings() {
         // 10 hands at mass 1 winning 1, 10 at 2 winning 3, 10 at 3 losing
         // 1, two without a bot decision.
@@ -1039,7 +1301,14 @@ mod tests {
         let policy = empty_policy();
         let cfg = HandConfig { num_players: Players::new(3).unwrap(), ..HandConfig::default() };
         let params = crate::bot::SearchParams { time_ms: 20, max_iters: 200, ..Default::default() };
-        let r = run_lbr_multiway(&policy, &cfg, 12, NonZeroU32::new(8).unwrap(), 3, Some(params), true, true);
+        let r = run_lbr_multiway(
+            &policy,
+            &cfg,
+            12,
+            NonZeroU32::new(8).unwrap(),
+            3,
+            MultiwayOpts { search: Some(params), model_search: true, widen: true, by_reach: true },
+        );
         assert_eq!(r.hands, 12);
         assert!(r.mbb_per_hand.is_finite() && r.ci95.is_finite());
     }
@@ -1051,8 +1320,8 @@ mod tests {
     fn multiway_lbr_crushes_stations_and_is_deterministic() {
         let policy = empty_policy();
         let cfg = HandConfig::default(); // 6-max
-        let a = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false, false);
-        let b = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false, false);
+        let a = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, MultiwayOpts::default());
+        let b = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, MultiwayOpts::default());
         assert_eq!(a.mbb_per_hand.to_bits(), b.mbb_per_hand.to_bits(), "not deterministic");
         assert!(
             a.mbb_per_hand - a.ci95 > 1_000.0,
