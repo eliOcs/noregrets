@@ -670,6 +670,7 @@ pub fn run_lbr_multiway(
     seed: u64,
     search: Option<crate::bot::SearchParams>,
     model_search: bool,
+    widen: bool,
 ) -> LbrResult {
     assert!(!model_search || search.is_some(), "modelling the search needs a searching bot");
     let n = cfg.num_players.get();
@@ -721,7 +722,12 @@ pub fn run_lbr_multiway(
             // would overstate the exploitability. Its solves are cached by
             // history, so a predicted spot the bot reaches is not solved
             // again.
-            let mut tracker = search.map(|_| crate::search::RangeTracker::new(n));
+            // `widen`: the bots' tracker widens off-model actions, as
+            // `serve`'s does (its opponents are people, not the blueprint).
+            let mut tracker = search.map(|_| {
+                let t = crate::search::RangeTracker::new(n);
+                if widen { t.with_widening() } else { t }
+            });
             let mut sessions: Vec<crate::bot::SearchSession> =
                 (0..n).map(|_| crate::bot::SearchSession::new()).collect();
             let mut model_sessions = sessions.clone();
@@ -1033,7 +1039,7 @@ mod tests {
         let policy = empty_policy();
         let cfg = HandConfig { num_players: Players::new(3).unwrap(), ..HandConfig::default() };
         let params = crate::bot::SearchParams { time_ms: 20, max_iters: 200, ..Default::default() };
-        let r = run_lbr_multiway(&policy, &cfg, 12, NonZeroU32::new(8).unwrap(), 3, Some(params), true);
+        let r = run_lbr_multiway(&policy, &cfg, 12, NonZeroU32::new(8).unwrap(), 3, Some(params), true, true);
         assert_eq!(r.hands, 12);
         assert!(r.mbb_per_hand.is_finite() && r.ci95.is_finite());
     }
@@ -1045,8 +1051,8 @@ mod tests {
     fn multiway_lbr_crushes_stations_and_is_deterministic() {
         let policy = empty_policy();
         let cfg = HandConfig::default(); // 6-max
-        let a = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false);
-        let b = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false);
+        let a = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false, false);
+        let b = run_lbr_multiway(&policy, &cfg, 300, NonZeroU32::new(12).unwrap(), 5, None, false, false);
         assert_eq!(a.mbb_per_hand.to_bits(), b.mbb_per_hand.to_bits(), "not deterministic");
         assert!(
             a.mbb_per_hand - a.ci95 > 1_000.0,

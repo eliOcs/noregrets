@@ -2171,3 +2171,29 @@ hands whose thinnest node is thinnest carries 34–44% of them, unseen
 infosets (4.4% of hands) another 10–17%, and the best-trained fifth
 2–4%, still +378 to +614 mbb/hand. Tracking the mass leaves the hands
 unchanged (same totals as without it).
+
+## 2026-11-01 — Gate with the modelling probe: served search +585 worse than the blueprint (8/8)
+
+`lbr --multiway --hands 20000 --search --search-iters 20000 --search-ms 75
+--model-search` (LBR likelihood floor 1e-6), `it-800m-r.nrc`, seeds 1–8,
+paired against the same blueprint without search (`lbr --multiway`).
+100 BB only (GOAL, 31 Oct). The bot's range tracker here is the probes'
+hard Bayes, not `serve`'s widened one (see the next entry).
+
+| Seed | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | mean |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| blueprint | +611 | +714 | +464 | +578 | +982 | +559 | +532 | +833 | +659 |
+| served search | +1214 | +1355 | +1207 | +1051 | +1451 | +1404 | +894 | +1379 | +1244 |
+| served + `--safe-resolve` | +806 | +1092 | +751 | +870 | +1166 | +883 | +978 | +1113 | +957 |
+
+| Paired | mean | t | worse |
+|---|---|---:|---|
+| served − blueprint | **+585 ±132** | 10.5 | 8/8 |
+| safe − blueprint | **+298 ±73** | 9.7 | 8/8 |
+| safe − served | −287 ±157 | −4.3 | 1/8 |
+
+Against a probe that knows how it plays, every searching configuration
+is more exploitable than its blueprint. The blueprint-modelling gate had
+the served search 268 better (31 Oct): that gain was the probe's blind
+spot. The gadget halves the damage; the ablation's gadget arm without
+the preflop all-in resolve was still +127 (seeds 1–3).

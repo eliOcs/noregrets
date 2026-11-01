@@ -640,6 +640,11 @@ enum Cmd {
         /// gadget (the opponent may take its blueprint value instead).
         #[arg(long, requires = "search")]
         safe_resolve: bool,
+        /// The bots' range tracker widens actions the blueprint makes
+        /// unlikely, as `serve`'s does (default: hard Bayes, exact against
+        /// a blueprint player).
+        #[arg(long, requires = "search")]
+        widen: bool,
         /// With --search: the LBR models the bot as it searches, not as
         /// the blueprint. Every bot decision is solved for all combos, the
         /// bot acts from its own, and the LBR's range updates and fold
@@ -1658,6 +1663,7 @@ fn main() {
             turn_blueprint,
             blueprint_at,
             safe_resolve,
+            widen,
             model_search,
             search_buckets,
             stack,
@@ -1685,7 +1691,7 @@ fn main() {
                 if multiway { "multiway, LBR seat rotating" } else { "blind-vs-blind" },
                 cfg.num_players,
                 if search {
-                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" }) + &if blueprint_at.is_empty() { String::new() } else { format!(", blueprint at {blueprint_at:?}") } + if safe_resolve { ", safe resolving" } else { "" } + if model_search { ", LBR models the search" } else { "" }
+                    format!(", bot searching {search_ms}ms/{search_iters} iters per decision, {} root, {} buckets, two-player turns {}", if decision_root { "decision" } else { "round" }, search_buckets.map_or("blueprint".to_string(), |b| b.to_string()), if turn_blueprint { "from the blueprint" } else { "solved" }) + &if blueprint_at.is_empty() { String::new() } else { format!(", blueprint at {blueprint_at:?}") } + if safe_resolve { ", safe resolving" } else { "" } + if widen { ", widened ranges" } else { "" } + if model_search { ", LBR models the search" } else { "" }
                 } else {
                     String::new()
                 }
@@ -1695,7 +1701,7 @@ fn main() {
             }
             let started = std::time::Instant::now();
             let r = if multiway {
-                lbr::run_lbr_multiway(&policy, &cfg, hands, runouts, seed, params, model_search)
+                lbr::run_lbr_multiway(&policy, &cfg, hands, runouts, seed, params, model_search, widen)
             } else {
                 lbr::run_lbr(&policy, &cfg, hands, runouts, seed)
             };
