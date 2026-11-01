@@ -2197,3 +2197,32 @@ is more exploitable than its blueprint. The blueprint-modelling gate had
 the served search 268 better (31 Oct): that gain was the probe's blind
 spot. The gadget halves the damage; the ablation's gadget arm without
 the preflop all-in resolve was still +127 (seeds 1–3).
+
+## 2026-11-01 — The production search (widened ranges): +762 worse than the blueprint (8/8)
+
+`serve` builds its tracker `with_widening()` and leaves the gadget off,
+so the faithful gate is `lbr --multiway --hands 20000 --search
+--search-iters 20000 --search-ms 75 --model-search --widen`, seeds 1–8,
+`it-800m-r.nrc`. The LBR's model clones the bots' tracker, so it widens
+as they do.
+
+| Seed | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | mean |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| blueprint | +611 | +714 | +464 | +578 | +982 | +559 | +532 | +833 | +659 |
+| served, hard Bayes | +1214 | +1355 | +1207 | +1051 | +1451 | +1404 | +894 | +1379 | +1244 |
+| served, widened (production) | +1416 | +1638 | +1248 | +1252 | +1574 | +1343 | +1446 | +1451 | +1421 |
+
+| Paired | mean | t | worse |
+|---|---|---:|---|
+| widened − blueprint | **+762 ±105** | 17.2 | 8/8 |
+| widened − hard Bayes | +177 ±156 | 2.7 | 7/8 |
+
+What production serves with `--search` is the most exploitable
+configuration measured: about +760 mbb/hand more than the same blueprint
+without search. Widening keeps more of each opponent's off-line combos,
+and the solves best-respond to those looser ranges. It was adopted
+(29 Oct) to stop absurd river answers to human lines, which it did, but
+no gate could see its cost until the probe modelled the search.
+
+Recommendation: serve blueprint-only (`serve` without `--search`) until
+a search configuration beats the blueprint on this gate.
