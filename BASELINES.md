@@ -2255,10 +2255,80 @@ The LBR folding preflop (after a failed steal, or its blind) costs
 +712, +879 and +662 mbb/hand at tight intervals; the least-reached fifth
 is noise (±1041).
 
-Reading: the stable part of the bound is preflop, and the steadiest
+Reading (for the served file; see the correction in the next entry: the
+plain trained `it-800m` loses mostly postflop): the stable part of the
+bound is preflop, and the steadiest
 single source is the bots giving up the pot to a re-raise after
 putting chips in (4-bet steals: 4% of hands, ~+320 overall, ±1% across
 seeds). These are well-trained nodes, so more iterations do not fix it
 (as 1.6B showed); the training changes worth screening are those that
 change how preflop strategies converge, measured with this breakdown at
 30M before anything is rented.
+
+### Correction: the preflop over-folding comes from the merged preflop
+
+`it-800m-r` is `it-800m` with the re-solved M2 preflop merged in. The
+plain trained `it-800m.nrc`, same probe, seeds 1–4: +574, +497, +760,
++617. Seed 1 breakdown: the bots fold preflop in 3,231 hands (8,305 for
+`it-800m-r`), net preflop ≈ +61 (vs ≈ +354); flop +175, turn +46, river
+−67, showdown +359 (±240). 4-bet steals are +122 (vs +319). By reach,
+the least-reached fifth of hands carries +1624 ±1050 (57%), the
+most-reached fifth +6. So training produces a blueprint whose leak is
+mostly postflop, in rarely reached lines; the over-folding is what the
+M2 refinement traded for the jam fix. The preflop leak of the 800M
+snapshots grows with training: bots folding to steals is +90 overall at
+30M, +191 at 50M, +212 at 100M, +243 at 200M, +316 at 400M and +334 at
+800M (seed 1).
+
+Facing-a-4-bet decisions get few updates (`preflop-reach`, it-800m-r,
+estimated regret updates per combo over 800M): BB facing a BTN 4-bet
+after 3-betting 177, after a UTG 4-bet 70, SB facing a BTN 4-bet 95. At
+70 updates BB folds QQ 51% and AKo 80% to that UTG 4-bet.
+
+## 2026-11-01 — Targeted preflop roots (`train --target-roots`): NEGATIVE at 30M
+
+`--target-roots f`: a share f of traversals start at a preflop decision
+facing a re-raise instead of at the root. A walk picks the line (each
+actor's action from 0.5 × its range-averaged current strategy + 0.5 ×
+uniform over non-fold actions; stop with probability 0.5 at each
+decision facing two or more raises). Every other seat's holes are then
+dealt jointly, by rejection, in proportion to its current-strategy reach
+of the line, the board uniformly, and the actor traverses from there.
+Each update is the decision's counterfactual regret up to a positive
+per-infoset scale, so the fixed point is unchanged with no importance
+weights; targeted traversals add nothing to averages. Tests:
+`targeted_roots_keep_the_fixed_point`,
+`targeted_roots_deal_from_the_current_reach`. The walk reads 169
+infosets per node; uncached it made a targeted traversal cost about 4×
+a plain one (30M: 85s vs 54s). A per-line table cache, re-read when 2%
+of training old, makes it free (10M: 17.3s vs 16.9s).
+
+Local 30M arms (`train --iters 30000000 --menu pluribus --bucket-table
+buckets.bin`, 28.6 GB peak RSS on this 31 GB machine), `lbr --multiway`
+and `br`, 20k hands, probe seeds 1–8 (means):
+
+| Training seed | control multiway / heads-up | `--target-roots 0.2` | paired multiway | paired heads-up |
+|---|---|---|---|---|
+| 0 | +2672 / +596 | +2384 / +728 | −288 ±107 (8/8 better) | +131 ±211 |
+| 1 | +2645 / +759 | +2530 / +921 | −115 ±158 | +163 ±180 |
+| 2 | +2500 / +689 | +2542 / +912 | +42 ±219 | +223 ±156 |
+| 3 | +2422 / +666 | +2530 / +834 | +109 ±206 | +168 ±132 |
+| mean | +2560 / +678 | +2497 / +849 | **−63** (t≈−0.7 over training seeds) | **+171** (4/4 worse) |
+
+Other arms, training seed 0: uncached 0.2 +2415 / +919; 0.05 +2615 /
++626 (−57 ±104, +29 ±151); 24M control +2753 / +918; 24M with 0.2
++3027 / +1011 (+274 ±169 multiway against the 24M control).
+
+VERDICT: no multiway gain across training seeds, and heads-up worse on
+every seed: displacing a fifth of the ordinary traversals costs the
+heads-up lines (the 24M control is +322 worse than 30M on heads-up), and
+the targeted ones do not buy it back. Kept as an opt-in flag.
+
+Method note: run-to-run variance of a 30M blueprint is large. Four
+controls differ by up to 250 on the multiway bound (+2422 to +2672) and
+160 on heads-up, more than most effects screened at 30M; the 24M control
+measured above the 30M ones. Probe-seed pairing removes only probe
+noise. A 30M arm needs at least four training seeds (or one per seed
+pair, as here) before a verdict; single-run 30M verdicts recorded
+earlier (multiway focus, preflop exploration, the floors at 30M) carry
+this unmeasured spread.

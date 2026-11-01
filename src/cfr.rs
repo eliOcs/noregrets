@@ -103,6 +103,17 @@ pub struct TrainConfig {
     /// own reach only, which the sweep computes exactly (Pluribus's
     /// UPDATE-STRATEGY, enumerated rather than sampled).
     pub preflop_sweep: bool,
+    /// Share of traversals rooted at a preflop decision facing a re-raise
+    /// (see `targeted_root`) instead of at the start of the hand. Such
+    /// decisions are reached only when an opponent samples a rare raise,
+    /// so at 800M a decision facing a 4-bet sees ~100 regret updates per
+    /// hand class. A targeted traversal deals the other seats' holes from
+    /// their current-strategy reach of the line, so each of its updates
+    /// is an unbiased sample of the decision's counterfactual regret up to
+    /// a positive per-infoset scale, which regret matching ignores: the
+    /// fixed point is unchanged, with no importance weights. Targeted
+    /// traversals add nothing to average strategies. 0 = off.
+    pub target_roots: f64,
 }
 
 impl Default for TrainConfig {
@@ -122,6 +133,7 @@ impl Default for TrainConfig {
             prune_per_weight: None,
             preflop_explore: 0.0,
             preflop_sweep: false,
+            target_roots: 0.0,
         }
     }
 }
@@ -240,7 +252,19 @@ pub struct Trainer {
     /// its own, with the blueprint's postflop play as everyone's
     /// continuation; it needs no postflop enumeration, so it is cheap.
     frozen_postflop: Option<Arc<dyn crate::mirror::Strategies>>,
+    /// Targeted-root walks: per preflop line, every class's current
+    /// strategy (169 × actions) and the iteration it was read at. Reading
+    /// 169 infosets per walked node otherwise costs more than the
+    /// traversal it roots.
+    walk_cache: DashMap<Vec<Token>, Arc<(u64, Vec<f32>)>, ahash::RandomState>,
 }
+
+/// Walk tables are re-read once they are this share of training old
+/// (and at least WALK_REFRESH_MIN iterations); the cache stops growing
+/// at WALK_CACHE_CAP lines, past which tables are read uncached.
+const WALK_REFRESH_SHARE: u64 = 50;
+const WALK_REFRESH_MIN: u64 = 100_000;
+const WALK_CACHE_CAP: usize = 200_000;
 
 const BASELINE_ALPHA: f32 = 0.5;
 
@@ -300,6 +324,27 @@ const MAX_ACTS: usize = 16;
 /// to a heap key.
 const KEY_BUF: usize = 96;
 
+/// The 1326 hole-card combos with their preflop class, and the number of
+/// combos in each class (for range-averaging class strategies).
+struct PreflopCombos {
+    holes: Vec<crate::cards::Hole>,
+    class: Vec<u16>,
+    per_class: [f64; 169],
+}
+
+fn preflop_combos() -> &'static PreflopCombos {
+    static COMBOS: std::sync::OnceLock<PreflopCombos> = std::sync::OnceLock::new();
+    COMBOS.get_or_init(|| {
+        let holes = crate::search::all_combos();
+        let class: Vec<u16> = holes.iter().map(|&h| crate::abstraction::preflop_bucket(*h)).collect();
+        let mut per_class = [0.0; 169];
+        for &c in &class {
+            per_class[c as usize] += 1.0;
+        }
+        PreflopCombos { holes, class, per_class }
+    })
+}
+
 pub fn make_key(bucket: u16, hist: &[Token]) -> InfoKey {
     let mut k = Vec::with_capacity(2 + hist.len());
     k.push(bucket as u8);
@@ -324,6 +369,7 @@ impl Trainer {
             vr: false,
             baselines: DashMap::with_hasher(ahash::RandomState::new()),
             frozen_postflop: None,
+            walk_cache: DashMap::with_hasher(ahash::RandomState::new()),
         }
     }
 
@@ -479,8 +525,17 @@ impl Trainer {
                     .rnr
                     .as_ref()
                     .is_some_and(|r| rng.random::<f64>() < r.p);
-                let mut hist = Vec::with_capacity(32);
-                self.traverse(&hand, &mut hist, traverser, weight, prune_ok, model_opp, &mut rng);
+                let targeted = self.cfg.target_roots > 0.0
+                    && rng.random::<f64>() < self.cfg.target_roots;
+                match targeted.then(|| self.targeted_root(t, &mut rng)).flatten() {
+                    Some((root, mut hist, actor)) => {
+                        self.traverse(&root, &mut hist, actor, weight, prune_ok, false, true, &mut rng);
+                    }
+                    None => {
+                        let mut hist = Vec::with_capacity(32);
+                        self.traverse(&hand, &mut hist, traverser, weight, prune_ok, model_opp, false, &mut rng);
+                    }
+                }
                 let done = self.iters_done.fetch_add(1, Ordering::Relaxed) + 1;
                 if done.is_multiple_of(4096) {
                     progress(done - start);
@@ -532,7 +587,7 @@ impl Trainer {
                     None => h.resample_hidden(None, &mut rng),
                 }
                 let mut hist = root_hist.to_vec();
-                self.traverse(&h, &mut hist, traverser, t as f64, false, false, &mut rng);
+                self.traverse(&h, &mut hist, traverser, t as f64, false, false, false, &mut rng);
             });
             self.iters_done.fetch_add(batch, Ordering::Relaxed);
         }
@@ -549,6 +604,7 @@ impl Trainer {
         weight: f64,
         prune_ok: bool,
         model_opp: bool,
+        no_avg: bool,
         rng: &mut SmallRng,
     ) -> f64 {
         let Some(p) = h.to_act() else {
@@ -617,7 +673,7 @@ impl Trainer {
             if !child.is_terminal() && child.street() != h.street() {
                 hist.push(Token::StreetSep);
             }
-            let v = self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, rng);
+            let v = self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, no_avg, rng);
             hist.truncate(depth);
             return v;
         }
@@ -660,7 +716,7 @@ impl Trainer {
                     hist.push(Token::StreetSep);
                 }
                 utils[i] =
-                    self.traverse(child, hist, traverser, weight, prune_ok, model_opp, rng);
+                    self.traverse(child, hist, traverser, weight, prune_ok, model_opp, no_avg, rng);
                 hist.truncate(depth);
                 node_util += sigma[i] * utils[i];
             }
@@ -705,7 +761,7 @@ impl Trainer {
             if !child.is_terminal() && child.street() != h.street() {
                 hist.push(Token::StreetSep);
             }
-            self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, rng)
+            self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, no_avg, rng)
         } else {
             // Sample one opponent action from their modeled strategy
             // (regret matching, or logit QRE when exploiting) and
@@ -721,7 +777,7 @@ impl Trainer {
                 None => sigma,
             };
             let swept = self.cfg.preflop_sweep && h.street() == Street::Preflop;
-            if !swept && !(self.cfg.snapshot_avg && h.street() != Street::Preflop) {
+            if !swept && !no_avg && !(self.cfg.snapshot_avg && h.street() != Street::Preflop) {
                 if let Some(mut node) = self.nodes.get_mut(key) {
                     for (st, &d) in node.strat.iter_mut().zip(dist) {
                         *st += weight * d;
@@ -785,7 +841,7 @@ impl Trainer {
                 hist.push(Token::StreetSep);
             }
             // No truncation needed: the nearest traverser ancestor restores hist.
-            let v = ratio * self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, rng);
+            let v = ratio * self.traverse(&child, hist, traverser, weight, prune_ok, model_opp, no_avg, rng);
             if !self.vr {
                 return v;
             }
@@ -903,6 +959,140 @@ impl Trainer {
     /// strategy into its `strat` accumulator. Called periodically after a
     /// warm-up; the exported blueprint is the mean of the snapshots.
     /// Returns the number of infosets snapshotted.
+    /// A root for a targeted traversal (`TrainConfig::target_roots`): walk
+    /// the preflop tree, each actor taking an action from
+    /// (1 − TARGET_EPS) × its range-averaged current strategy + TARGET_EPS
+    /// × uniform over the non-fold actions, and stop with probability
+    /// TARGET_STOP at each decision facing at least TARGET_MIN_RAISES
+    /// raises. Every other seat's holes are then drawn, jointly by
+    /// rejection, in proportion to its current-strategy reach of the
+    /// walked line, and the board uniformly: the deal's distribution given
+    /// the line, so traversing from here for the actor samples its
+    /// counterfactual regret at that decision (scaled per infoset). Which
+    /// line is walked does not matter for that. `None` when the walk ends
+    /// the round or reaches a line no other seat's strategy plays.
+    fn targeted_root(&self, t: u64, rng: &mut SmallRng) -> Option<(Hand, Vec<Token>, usize)> {
+        const TARGET_EPS: f64 = 0.5;
+        const TARGET_STOP: f64 = 0.5;
+        const TARGET_MIN_RAISES: u8 = 2;
+        let combos = preflop_combos();
+        let n = self.cfg.hand.num_players.get();
+        let mut deck = fresh_deck();
+        deck.shuffle(rng);
+        let mut h = Hand::new(&self.cfg.hand, 0, deck);
+        let mut hist: Vec<Token> = Vec::with_capacity(16);
+        let mut reach = vec![[1.0f64; 169]; n];
+        let actor = loop {
+            let p = h.to_act()?;
+            if h.street() != Street::Preflop {
+                return None;
+            }
+            if h.n_raises() >= TARGET_MIN_RAISES && rng.random::<f64>() < TARGET_STOP {
+                break p;
+            }
+            let acts = self.abs.abstract_actions(&h);
+            let k = acts.len();
+            let table = self.walk_table(&hist, k, t);
+            let sig = &table.1;
+            let mut agg = [0.0f64; MAX_ACTS];
+            for c in 0..169 {
+                let w = reach[p][c] * combos.per_class[c];
+                for (g, &x) in agg[..k].iter_mut().zip(&sig[c * k..(c + 1) * k]) {
+                    *g += w * x as f64;
+                }
+            }
+            let total: f64 = agg[..k].iter().sum();
+            let nonfold = acts.iter().filter(|&&a| a != AbsAction::Fold).count();
+            if total <= 0.0 || nonfold == 0 {
+                return None;
+            }
+            let q: Vec<f64> = (0..k)
+                .map(|i| {
+                    (1.0 - TARGET_EPS) * agg[i] / total
+                        + if acts[i] == AbsAction::Fold { 0.0 } else { TARGET_EPS / nonfold as f64 }
+                })
+                .collect();
+            let i = sample_index(&q, rng);
+            for (c, r) in reach[p].iter_mut().enumerate() {
+                *r *= sig[c * k + i] as f64;
+            }
+            h.apply(self.abs.concrete(&h, acts[i]));
+            hist.push(acts[i].token());
+            if h.is_terminal() || h.street() != Street::Preflop {
+                return None;
+            }
+        };
+        // Per seat, cumulative reach over the 1326 combos.
+        let mut cums: Vec<Vec<f64>> = Vec::with_capacity(n);
+        for (q, r) in reach.iter().enumerate() {
+            if q == actor {
+                cums.push(Vec::new());
+                continue;
+            }
+            let mut acc = 0.0;
+            let cum: Vec<f64> = combos
+                .class
+                .iter()
+                .map(|&c| {
+                    acc += r[c as usize];
+                    acc
+                })
+                .collect();
+            if acc <= 0.0 {
+                return None;
+            }
+            cums.push(cum);
+        }
+        let mut want = [None; MAX_PLAYERS];
+        'deal: for _ in 0..256 {
+            let mut used = [false; 52];
+            for q in (0..n).filter(|&q| q != actor) {
+                let cum = &cums[q];
+                let x = rng.random::<f64>() * cum[cum.len() - 1];
+                let j = cum.partition_point(|&v| v <= x).min(cum.len() - 1);
+                let hole = combos.holes[j];
+                if hole.iter().any(|c| used[c.index()]) {
+                    continue 'deal;
+                }
+                hole.iter().for_each(|c| used[c.index()] = true);
+                want[q] = Some(hole);
+            }
+            h.resample_hidden_with(&want, rng);
+            return Some((h, hist, actor));
+        }
+        None
+    }
+
+    /// Every class's current strategy at preflop line `hist` (`k`
+    /// actions), row-major 169 × k, from the walk cache when fresh.
+    fn walk_table(&self, hist: &[Token], k: usize, t: u64) -> Arc<(u64, Vec<f32>)> {
+        let stale = |e: &(u64, Vec<f32>)| t.saturating_sub(e.0) > (t / WALK_REFRESH_SHARE).max(WALK_REFRESH_MIN);
+        if let Some(e) = self.walk_cache.get(hist) {
+            if !stale(&e) {
+                return Arc::clone(&e);
+            }
+        }
+        let mut key = make_key(0, hist).into_vec();
+        let mut sig = vec![0.0f32; 169 * k];
+        let mut buf = [0.0f64; MAX_ACTS];
+        for (c, row) in sig.chunks_mut(k).enumerate() {
+            key[0] = c as u8;
+            key[1] = (c >> 8) as u8;
+            match self.nodes.get(&key[..]) {
+                Some(node) if node.regret.len() == k => {
+                    regret_matching_into(&node.regret, &mut buf[..k]);
+                    row.iter_mut().zip(&buf[..k]).for_each(|(r, &x)| *r = x as f32);
+                }
+                _ => row.fill(1.0 / k as f32),
+            }
+        }
+        let e = Arc::new((t, sig));
+        if self.walk_cache.len() < WALK_CACHE_CAP || self.walk_cache.contains_key(hist) {
+            self.walk_cache.insert(hist.to_vec(), Arc::clone(&e));
+        }
+        e
+    }
+
     pub fn snapshot_strategy(&self) -> usize {
         let mut n = 0;
         let mut s = Vec::new();
@@ -1640,7 +1830,74 @@ mod tests {
         assert!(btn_aa[0] < 0.1, "button must not fold AA, got {:.3}", btn_aa[0]);
     }
 
-    /// Multiway-focused sampling is importance-weighted, so it must keep
+    /// Targeted roots deal from current reach without importance weights;
+    /// the push/fold fixed point must survive half the traversals being
+    /// rooted at decisions facing a re-raise.
+    #[test]
+    fn targeted_roots_keep_the_fixed_point() {
+        let mut t = push_fold_trainer();
+        t.cfg.target_roots = 0.5;
+        run_on_one_thread(&t, 120_000);
+        let aa = preflop_bucket([make_card(12, 0), make_card(12, 1)]);
+        let shove_hist = [AbsAction::AllIn.token()];
+        let aa_call = t.avg_strategy(aa, &shove_hist).expect("AA-vs-shove visited");
+        assert!(aa_call[1] > 0.8, "AA should call a shove, got {:.3}", aa_call[1]);
+        let junk = preflop_bucket([make_card(0, 0), make_card(5, 1)]);
+        let junk_call = t.avg_strategy(junk, &shove_hist).expect("junk-vs-shove visited");
+        assert!(junk_call[1] < 0.2, "72o must fold to a shove, got {:.3}", junk_call[1]);
+        let btn_aa = t.avg_strategy(aa, &[]).expect("root AA visited");
+        assert!(btn_aa[0] < 0.1, "button must not fold AA, got {:.3}", btn_aa[0]);
+    }
+
+    /// A targeted root deals the other seat from its current-strategy
+    /// reach of the walked line: if only KK re-raises an open, every root
+    /// at the opener's decision facing that re-raise gives the re-raiser KK.
+    #[test]
+    fn targeted_roots_deal_from_the_current_reach() {
+        let mut t = push_fold_trainer();
+        let kk = preflop_bucket([make_card(11, 0), make_card(11, 1)]);
+        let mut deck = fresh_deck();
+        let mut rng = SmallRng::seed_from_u64(5);
+        deck.shuffle(&mut rng);
+        let root = Hand::new(&t.cfg.hand, 0, deck);
+        for open in t.abs.abstract_actions(&root) {
+            if !matches!(open, AbsAction::Bet(_)) {
+                continue;
+            }
+            let mut h = root.clone();
+            h.apply(t.abs.concrete(&root, open));
+            let acts = t.abs.abstract_actions(&h);
+            for c in 0..169u16 {
+                // Fold everything but KK, which raises with every size.
+                let regret: Vec<f64> = acts
+                    .iter()
+                    .map(|&a| match (a, c == kk) {
+                        (AbsAction::Fold, false) => 1.0,
+                        (AbsAction::Fold | AbsAction::CheckCall, true) => 0.0,
+                        (_, true) => 1.0,
+                        _ => 0.0,
+                    })
+                    .collect();
+                let n = regret.len();
+                t.nodes.insert(make_key(c, &[open.token()]), Node { regret, strat: vec![0.0; n] });
+            }
+        }
+        let mut checked = 0;
+        for _ in 0..4000 {
+            let Some((h, hist, actor)) = t.targeted_root(0, &mut rng) else { continue };
+            assert!(h.n_raises() >= 2);
+            assert_eq!(h.street(), Street::Preflop);
+            assert_eq!(Some(actor), h.to_act());
+            if hist.len() == 2 {
+                assert_eq!(actor, 0, "the opener faces the re-raise");
+                assert_eq!(preflop_bucket(*h.hole(1)), kk, "only KK re-raises");
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "too few roots facing the re-raise: {checked}");
+    }
+
+
     /// the push/fold fixed point (AA calls a shove, the button never
     /// folds AA) even at a strong focus weight.
     #[test]

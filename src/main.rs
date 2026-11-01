@@ -223,6 +223,11 @@ enum Cmd {
         /// 0 = off.
         #[arg(long, default_value_t = 0)]
         preflop_sweep_every: u64,
+        /// Share of traversals rooted at a preflop decision facing a
+        /// re-raise, other seats dealt from their current reach of the
+        /// line (unbiased up to scale, no importance weights). 0 = off.
+        #[arg(long, default_value_t = 0.0)]
+        target_roots: f64,
         /// Also save the blueprint at these iteration counts, as
         /// `<out>.<iterations>` (comma-separated, e.g. 100000000,200000000).
         #[arg(long, value_delimiter = ',')]
@@ -861,6 +866,7 @@ fn main() {
             prune_per_weight,
             preflop_explore,
             preflop_sweep_every,
+            target_roots,
             save_at,
             threads,
         } => {
@@ -895,6 +901,7 @@ fn main() {
                 prune_per_weight,
                 preflop_explore,
                 preflop_sweep: preflop_sweep_every > 0,
+                target_roots,
                 ..TrainConfig::default()
             };
             let trainer = match &resume {
@@ -1000,7 +1007,7 @@ fn main() {
                 "training {players}-max, {iters} iterations, menu {menu:?}, pruning {}, \
                  vr baselines {}, snapshot avg {}, multiway focus {multiway_focus}, \
                  floor per weight {floor_per_weight:?}{}, prune per weight {prune_per_weight:?}, \
-                 preflop explore {preflop_explore}",
+                 preflop explore {preflop_explore}, target roots {target_roots}",
                 if no_prune { "off" } else if per_action_prune { "per-action" } else { "pluribus" },
                 if vr_baseline { "on" } else { "off" },
                 if snapshot_avg { "on" } else { "off" },
